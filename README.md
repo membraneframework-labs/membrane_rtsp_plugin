@@ -1,27 +1,71 @@
-# Membrane Template Plugin
+# Membrane RTSP Plugin
 
-[![Hex.pm](https://img.shields.io/hexpm/v/membrane_template_plugin.svg)](https://hex.pm/packages/membrane_template_plugin)
-[![API Docs](https://img.shields.io/badge/api-docs-yellow.svg?style=flat)](https://hexdocs.pm/membrane_template_plugin)
-[![CircleCI](https://circleci.com/gh/membraneframework/membrane_template_plugin.svg?style=svg)](https://circleci.com/gh/membraneframework/membrane_template_plugin)
+[![Hex.pm](https://img.shields.io/hexpm/v/membrane_rtsp_plugin.svg)](https://hex.pm/packages/membrane_rtsp_plugin)
+[![API Docs](https://img.shields.io/badge/api-docs-yellow.svg?style=flat)](https://hexdocs.pm/membrane_rtsp_plugin)
 
-This repository contains a template for new plugins.
-
-Check out different branches for other flavors of this template.
-
-It's a part of the [Membrane Framework](https://membrane.stream).
+Plugin that simplifies connecting to RTSP servers.
 
 ## Installation
 
-The package can be installed by adding `membrane_template_plugin` to your list of dependencies in `mix.exs`:
+Add the following line to your deps in `mix.exs`:
 
 ```elixir
 def deps do
   [
-    {:membrane_template_plugin, "~> 0.1.0"}
+    {:membrane_rtsp_plugin, github: "gBillal/membrane_rtsp_plugin", tag: "v0.1.0"}
   ]
 end
 ```
 
 ## Usage
 
-TODO
+The following pipeline reads only video from a local RTSP server using `TCP` transport
+
+```elixir
+defmodule RtspPipeline do
+  @moduledoc false
+
+  use Membrane.Pipeline
+
+  def start() do
+    Pipeline.start(__MODULE__, options)
+  end
+
+  @impl true
+  def handle_init(_ctx, _opts) do
+    spec = [
+      child(:source, %Membrane.RTSP.Source{
+        transport: :tcp,
+        allowed_media_types: [:video],
+        stream_uri: "rtsp://localhost:8554/mystream"
+      })
+    ]
+
+    {[spec: spec], %{}}
+  end
+
+  @impl true
+  def handle_child_notification({:new_track, ssrc, _track}, _element, _ctx, state) do
+    spec = [
+      get_child(:source)
+      |> via_out(Pad.ref(:output, ssrc))
+      |> child(:funnel, Membrane.Funnel)
+      |> child(:sink, , %Membrane.File.Source{
+        location: "video.h264"
+      })
+    ]
+
+    {[spec: spec], state}
+  end
+
+  @impl true
+  def handle_child_notification(_message, _element, _ctx, state) do
+    {[], state}
+  end
+
+  @impl true
+  def handle_child_pad_removed(:source, _pad, _ctx, state) do
+    {[], state}
+  end
+end
+```
