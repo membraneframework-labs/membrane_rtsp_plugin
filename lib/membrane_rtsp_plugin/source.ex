@@ -31,7 +31,7 @@ defmodule Membrane.RTSP.Source do
 
   def_options stream_uri: [
                 spec: binary(),
-                description: "The RTSP uri of the resource to stream."
+                description: "The RTSP URI of the resource to stream."
               ],
               allowed_media_types: [
                 spec: [:video | :audio | :application],
@@ -41,22 +41,28 @@ defmodule Membrane.RTSP.Source do
                 """
               ],
               transport: [
-                spec: [:udp | :tcp],
+                spec:
+                  {:udp, port_range_start :: non_neg_integer(),
+                   port_range_end :: non_neg_integer()}
+                  | :tcp,
                 default: :tcp,
-                description: "Set the rtsp transport protocol."
+                description: """
+                Transport protocol that will be used in the established RTSP stream. In case of
+                UDP a range needs to provided from which receiving ports will be chosen.
+                """
               ],
               timeout: [
                 spec: Time.t(),
                 default: Time.seconds(15),
                 default_inspector: &Time.pretty_duration/1,
-                description: "Set RTSP response timeout"
+                description: "RTSP response timeout"
               ],
               keep_alive_interval: [
                 spec: Time.t(),
                 default: Time.seconds(15),
                 default_inspector: &Time.pretty_duration/1,
                 description: """
-                Send a heartbeat to the RTSP server at a regular interval to
+                Interval of a heartbeat sent to the RTSP server at a regular interval to
                 keep the session alive.
                 """
               ]
@@ -76,7 +82,7 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_playing(_ctx, state) do
+  def handle_setup(_ctx, state) do
     opts =
       Map.take(state, [
         :stream_uri,
@@ -156,7 +162,7 @@ defmodule Membrane.RTSP.Source do
         {[spec: spec, start_timer: {:playing_timer, @source_ready_timeout}],
          %{state | tracks: tracks, tcp_socket: local_socket}}
 
-      :udp ->
+      {:udp, _, _} ->
         spec =
           [child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})] ++
             Enum.flat_map(tracks, fn track ->

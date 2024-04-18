@@ -10,13 +10,10 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   @content_type_header [{"accept", "application/sdp"}]
 
-  @udp_min_port 5000
-  @udp_max_port 65_000
+  @base_back_off_time Membrane.Time.milliseconds(10)
+  @max_back_off_time Membrane.Time.minutes(2)
 
-  @base_back_off_in_ms 10
-  @max_back_off_in_ms :timer.minutes(2)
-
-  @source_ready_timeout 5_000
+  @source_ready_timeout Membrane.Time.seconds(5) |> Membrane.Time.as_milliseconds(:round)
 
   @type media_types :: [:video | :audio | :application]
   @type connection_opts :: %{stream_uri: binary(), allowed_media_types: media_types()}
@@ -52,10 +49,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       with {:ok, state} <- start_rtsp_connection(state),
            {:ok, state} <- get_rtsp_description(state),
            {:ok, state} <- setup_rtsp_connection(state),
-           {:ok, state} <-
-             %{state | status: :connected, reconnect_attempt: 0}
-             |> notify_parent({:tracks, Map.values(state.tracks)})
-             |> receive_source_ready_message(),
+           {:ok, state} <- prepare_source(state),
            :ok <- play(state) do
         %{
           state
@@ -64,7 +58,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       else
         {:error, reason, state} ->
           Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
-          if is_pid(state.rtsp_session), do: RTSP.close(state.rtsp_session)
+          if state.rtsp_session != nil, do: RTSP.close(state.rtsp_session)
 
           state = notify_parent(state, {:connection_failed, reason}) |> retry()
           %{state | status: :failed}
@@ -158,7 +152,20 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end)
   end
 
-  defp play(%{rtsp_session: rtsp_session, transport: :udp} = state) do
+  defp prepare_source(state) do
+    state =
+      %{state | status: :connected, reconnect_attempt: 0}
+      |> notify_parent({:tracks, Map.values(state.tracks)})
+
+    receive do
+      :source_ready -> {:ok, state}
+    after
+      @source_ready_timeout ->
+        {:error, :source_ready_timeout, state}
+    end
+  end
+
+  defp play(%{rtsp_session: rtsp_session, transport: {:udp, _, _}} = state) do
     Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
 
     case RTSP.play(rtsp_session) do
@@ -178,37 +185,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
      [{"Transport", "RTP/AVP/TCP;unicast;interleaved=#{media_id * 2}-#{media_id * 2 + 1}"}]}
   end
 
-  defp build_transport_header(%{transport: :udp}, _media_id) do
-    @udp_min_port..@udp_max_port//2
-    |> Enum.shuffle()
-    |> Enum.reduce_while({:error, :no_free_port}, fn rtp_port, acc ->
-      if free_port?(rtp_port) and free_port?(rtp_port + 1) do
-        {:halt,
-         {:ok, {rtp_port, rtp_port + 1},
-          [{"Transport", "RTP/AVP;unicast;client_port=#{rtp_port}-#{rtp_port + 1}"}]}}
-      else
-        {:cont, acc}
-      end
-    end)
-  end
+  defp build_transport_header(%{transport: {:udp, port_range_start, port_range_end}}, media_id) do
+    rtp_port = port_range_start + media_id * 2
 
-  defp receive_source_ready_message(state) do
-    receive do
-      :source_ready -> {:ok, state}
-    after
-      @source_ready_timeout ->
-        {:error, :source_ready_timeout, state}
-    end
-  end
-
-  defp free_port?(port) do
-    case :gen_udp.open(port, reuseaddr: true) do
-      {:ok, socket} ->
-        :inet.close(socket)
-        true
-
-      _error ->
-        false
+    if rtp_port + 1 > port_range_end do
+      {:error, :port_range_exceeded}
+    else
+      {:ok, {rtp_port, rtp_port + 1},
+       [{"Transport", "RTP/AVP/UDP;unicast;client_port=#{rtp_port}-#{rtp_port + 1}"}]}
     end
   end
 
@@ -237,12 +221,12 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   defp retry(%{reconnect_attempt: attempt} = state) do
     delay =
-      :math.pow(2, attempt)
-      |> Kernel.*(@base_back_off_in_ms)
-      |> min(@max_back_off_in_ms)
-      |> trunc()
+      min(
+        :math.pow(2, attempt) * @base_back_off_time,
+        @max_back_off_time
+      )
 
-    Membrane.Logger.info("retry connection in #{delay} ms")
+    Membrane.Logger.info("Retry connection in #{delay} ms")
     Process.send_after(self(), :connect, delay)
     %{state | reconnect_attempt: attempt + 1}
   end
