@@ -16,6 +16,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   @base_back_off_in_ms 10
   @max_back_off_in_ms :timer.minutes(2)
 
+  @source_ready_timeout 5_000
+
   @type media_types :: [:video | :audio | :application]
   @type connection_opts :: %{stream_uri: binary(), allowed_media_types: media_types()}
 
@@ -50,10 +52,15 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       with {:ok, state} <- start_rtsp_connection(state),
            {:ok, state} <- get_rtsp_description(state),
            {:ok, state} <- setup_rtsp_connection(state),
+           {:ok, state} <-
+             %{state | status: :connected, reconnect_attempt: 0}
+             |> notify_parent({:tracks, Map.values(state.tracks)})
+             |> receive_source_ready_message(),
            :ok <- play(state) do
-        %{state | status: :connected, reconnect_attempt: 0}
-        |> notify_parent({:tracks, Map.values(state.tracks)})
-        |> keep_alive()
+        %{
+          state
+          | keep_alive_timer: Process.send_after(self(), :keep_alive, state.keep_alive_interval)
+        }
       else
         {:error, reason, state} ->
           Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
@@ -146,18 +153,24 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
             "ConnectionManager: Setting up RTSP connection failed: #{inspect(error)}"
           )
 
-          {:halt, {:error, :setting_up_sdp_connection_failed, state}}
+          {:halt, {:error, :setting_up_rtsp_connection_failed, state}}
       end
     end)
   end
 
-  defp play(%{rtsp_session: rtsp_session} = state) do
+  defp play(%{rtsp_session: rtsp_session, transport: :udp} = state) do
     Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
 
     case RTSP.play(rtsp_session) do
       {:ok, %{status: 200}} -> :ok
       _error -> {:error, :play_rtsp_failed, state}
     end
+  end
+
+  defp play(%{rtsp_session: rtsp_session, transport: :tcp}) do
+    Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
+
+    RTSP.play_no_response(rtsp_session)
   end
 
   defp build_transport_header(%{transport: :tcp} = state, media_id) do
@@ -177,6 +190,15 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
         {:cont, acc}
       end
     end)
+  end
+
+  defp receive_source_ready_message(state) do
+    receive do
+      :source_ready -> {:ok, state}
+    after
+      @source_ready_timeout ->
+        {:error, :source_ready_timeout, state}
+    end
   end
 
   defp free_port?(port) do

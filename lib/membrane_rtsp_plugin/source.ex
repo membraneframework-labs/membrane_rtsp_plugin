@@ -22,7 +22,12 @@ defmodule Membrane.RTSP.Source do
 
   require Membrane.Logger
 
-  alias __MODULE__.{ConnectionManager, Decapsulator, TCP}
+  alias __MODULE__.{ConnectionManager, TCP}
+  alias Membrane.Time
+  alias Membrane.RTP.RTSP.Decapsulator
+
+  @source_ready_timeout Time.milliseconds(100)
+  # @source_ready_retries 3
 
   def_options stream_uri: [
                 spec: binary(),
@@ -41,13 +46,15 @@ defmodule Membrane.RTSP.Source do
                 description: "Set the rtsp transport protocol."
               ],
               timeout: [
-                spec: non_neg_integer(),
-                default: :timer.seconds(15),
+                spec: Time.t(),
+                default: Time.seconds(15),
+                default_inspector: &Time.pretty_duration/1,
                 description: "Set RTSP response timeout"
               ],
               keep_alive_interval: [
-                spec: non_neg_integer(),
-                default: :timer.seconds(15),
+                spec: Time.t(),
+                default: Time.seconds(15),
+                default_inspector: &Time.pretty_duration/1,
                 description: """
                 Send a heartbeat to the RTSP server at a regular interval to
                 keep the session alive.
@@ -146,7 +153,8 @@ defmodule Membrane.RTSP.Source do
           |> via_in(Pad.ref(:rtp_input, make_ref()))
           |> child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})
 
-        {[spec: spec], %{state | tracks: tracks, tcp_socket: local_socket}}
+        {[spec: spec, start_timer: {:playing_timer, @source_ready_timeout}],
+         %{state | tracks: tracks, tcp_socket: local_socket}}
 
       :udp ->
         spec =
@@ -164,7 +172,8 @@ defmodule Membrane.RTSP.Source do
               ]
             end)
 
-        {[spec: spec], %{state | tracks: tracks}}
+        {[spec: spec, start_timer: {:playing_timer, @source_ready_timeout}],
+         %{state | tracks: tracks}}
     end
   end
 
@@ -177,6 +186,13 @@ defmodule Membrane.RTSP.Source do
   @impl true
   def handle_info(_message, _ctx, state) do
     {[], state}
+  end
+
+  @impl true
+  def handle_tick(:playing_timer, ctx, state) do
+    IO.inspect(ctx, label: "ctx")
+    send(state.connection_manager, :source_ready)
+    {[stop_timer: :playing_timer], state}
   end
 
   @impl true
