@@ -37,10 +37,12 @@ defmodule Membrane.RTSP.Plugin.Mixfile do
   defp deps do
     [
       {:membrane_core, "~> 1.0"},
-      {:membrane_rtsp,
-       github: "membraneframework/membrane_rtsp",
-       branch: "expand-length-verification",
-       override: true},
+      {
+        :membrane_rtsp,
+        #  github: "membraneframework/membrane_rtsp",
+        #  branch: "remove-transport-abstraction",
+        path: "../membrane_rtsp", override: true
+      },
       # {:membrane_rtsp, "~> 0.6.0"},
       {:membrane_rtp_plugin,
        github: "membraneframework/membrane_rtp_plugin",
@@ -49,7 +51,8 @@ defmodule Membrane.RTSP.Plugin.Mixfile do
       # {:membrane_rtp_plugin, "~> 0.27.1"},
       {:membrane_rtp_h264_plugin, "~> 0.19.0"},
       {:membrane_rtp_h265_plugin, "~> 0.5.0"},
-      {:membrane_tcp_plugin, "~> 0.2.0"},
+      {:membrane_tcp_plugin, path: "../membrane_tcp_plugin", override: true},
+      # {:membrane_tcp_plugin, "~> 0.2.0"},
       {:membrane_h26x_plugin, "~> 0.10.0"},
       {:membrane_udp_plugin, "~> 0.13.0"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},

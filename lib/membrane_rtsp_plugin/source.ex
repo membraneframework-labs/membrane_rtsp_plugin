@@ -22,12 +22,9 @@ defmodule Membrane.RTSP.Source do
 
   require Membrane.Logger
 
-  alias __MODULE__.{ConnectionManager, TCP}
+  alias __MODULE__.{ConnectionManager, ReadyNotifier}
   alias Membrane.Time
   alias Membrane.RTP.RTSP.Decapsulator
-
-  @source_ready_timeout Time.milliseconds(100)
-  # @source_ready_retries 3
 
   def_options stream_uri: [
                 spec: binary(),
@@ -114,10 +111,14 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_child_notification({:pid, pid}, :source, _ctx, %{tcp_socket: socket} = state) do
-    # Socket active mode consumes much less cpu that non-active mode.
-    :ok = :gen_tcp.controlling_process(socket, pid)
-    :ok = :inet.setopts(socket, active: true)
+  def handle_child_notification({:request_socket_control, socket, pid}, :tcp_source, _ctx, state) do
+    ConnectionManager.transfer_rtsp_socket_control(state.connection_manager, pid)
+    {[], state}
+  end
+
+  @impl true
+  def handle_child_notification(:ready, :ready_notifier, _ctx, state) do
+    send(state.connection_manager, :source_ready)
     {[], state}
   end
 
@@ -140,7 +141,7 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_info({:tracks, tracks}, _ctx, state) do
+  def handle_info(%{tracks: tracks, transport_info: transport_info}, _ctx, state) do
     Membrane.Logger.info("Received tracks: #{inspect(tracks)}")
 
     fmt_mapping =
@@ -149,37 +150,37 @@ defmodule Membrane.RTSP.Source do
       end)
       |> Enum.into(%{})
 
-    case state.transport do
-      :tcp ->
-        local_socket = List.first(tracks).transport
+    common_spec = [
+      child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping}),
+      child(:ready_notifier, ReadyNotifier)
+    ]
 
+    case transport_info do
+      {:tcp, tcp_socket} ->
         spec =
-          child(:source, %TCP{local_socket: local_socket})
-          |> child(:tcp_depayloader, Decapsulator)
-          |> via_in(Pad.ref(:rtp_input, make_ref()))
-          |> child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})
+          common_spec ++
+            [
+              child(:tcp_source, %Membrane.TCP.Source{
+                connection_side: :client,
+                local_socket: tcp_socket
+              })
+              |> child(:tcp_depayloader, Decapsulator)
+              |> via_in(Pad.ref(:rtp_input, make_ref()))
+              |> get_child(:rtp_session)
+            ]
 
-        {[spec: spec, start_timer: {:playing_timer, @source_ready_timeout}],
-         %{state | tracks: tracks, tcp_socket: local_socket}}
+        {[spec: spec], %{state | tracks: tracks, tcp_socket: tcp_socket}}
 
-      {:udp, _, _} ->
+      {:udp, min_port, max_port} ->
         spec =
-          [child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})] ++
-            Enum.flat_map(tracks, fn track ->
-              {rtp_port, rtcp_port} = track.transport
-
-              [
-                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtp_port})
-                |> via_in(Pad.ref(:rtp_input, make_ref()))
-                |> get_child(:rtp_session),
-                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtcp_port})
-                |> via_in(Pad.ref(:rtp_input, make_ref()))
-                |> get_child(:rtp_session)
-              ]
+          common_spec ++
+            Enum.map(min_port..max_port, fn port ->
+              child({:udp_source, make_ref()}, %Membrane.UDP.Source{local_port_no: port})
+              |> via_in(Pad.ref(:rtp_input, make_ref()))
+              |> get_child(:rtp_session)
             end)
 
-        {[spec: spec, start_timer: {:playing_timer, @source_ready_timeout}],
-         %{state | tracks: tracks}}
+        {[spec: spec], %{state | tracks: tracks}}
     end
   end
 
@@ -192,13 +193,6 @@ defmodule Membrane.RTSP.Source do
   @impl true
   def handle_info(_message, _ctx, state) do
     {[], state}
-  end
-
-  @impl true
-  def handle_tick(:playing_timer, ctx, state) do
-    IO.inspect(ctx, label: "ctx")
-    send(state.connection_manager, :source_ready)
-    {[stop_timer: :playing_timer], state}
   end
 
   @impl true

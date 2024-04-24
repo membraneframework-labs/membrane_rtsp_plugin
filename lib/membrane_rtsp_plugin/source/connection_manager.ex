@@ -10,8 +10,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   @content_type_header [{"accept", "application/sdp"}]
 
-  @base_back_off_time Membrane.Time.milliseconds(10)
-  @max_back_off_time Membrane.Time.minutes(2)
+  @base_back_off_time Membrane.Time.milliseconds(10) |> Membrane.Time.as_milliseconds(:round)
+  @max_back_off_time Membrane.Time.minutes(2) |> Membrane.Time.as_milliseconds(:round)
 
   @source_ready_timeout Membrane.Time.seconds(5) |> Membrane.Time.as_milliseconds(:round)
 
@@ -26,6 +26,11 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   @spec stop(pid()) :: :ok
   def stop(server) do
     GenServer.call(server, :stop)
+  end
+
+  @spec transfer_rtsp_socket_control(connection_manager :: pid(), new_controller :: pid()) :: :ok
+  def transfer_rtsp_socket_control(connection_manager, new_controller) do
+    GenServer.call(connection_manager, {:transfer_rtsp_socket_control, new_controller})
   end
 
   @impl true
@@ -49,19 +54,30 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       with {:ok, state} <- start_rtsp_connection(state),
            {:ok, state} <- get_rtsp_description(state),
            {:ok, state} <- setup_rtsp_connection(state),
-           {:ok, state} <- prepare_source(state),
-           :ok <- play(state) do
+           {:ok, state} <- prepare_source(state) do
         %{
           state
           | keep_alive_timer: Process.send_after(self(), :keep_alive, state.keep_alive_interval)
         }
       else
-        {:error, reason, state} ->
-          Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
-          if state.rtsp_session != nil, do: RTSP.close(state.rtsp_session)
+        {:error, reason, state} -> handle_rtsp_error(reason, state)
+      end
 
-          state = notify_parent(state, {:connection_failed, reason}) |> retry()
-          %{state | status: :failed}
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:source_ready, state) do
+    state =
+      case play(state) do
+        :ok ->
+          %{
+            state
+            | keep_alive_timer: Process.send_after(self(), :keep_alive, state.keep_alive_interval)
+          }
+
+        {:error, reason, state} ->
+          handle_rtsp_error(reason, state)
       end
 
     {:noreply, state}
@@ -102,10 +118,15 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     {:stop, :normal, :ok, state}
   end
 
+  @impl true
+  def handle_call({:transfer_rtsp_socket_control, new_controller}, _from, state) do
+    {:reply, RTSP.transfer_socket_control(state.rtsp_session, new_controller), state}
+  end
+
   defp start_rtsp_connection(state) do
     options = [response_timeout: state.timeout, controlling_process: state.parent_pid]
 
-    case RTSP.start(state.stream_uri, TCPWrapper, options) do
+    case RTSP.start(state.stream_uri, options) do
       {:ok, session} ->
         Process.monitor(session)
         {:ok, %{state | rtsp_session: session}}
@@ -137,10 +158,9 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     state.tracks
     |> Enum.with_index()
     |> Enum.reduce_while({:ok, state}, fn {{control_path, _track}, idx}, {:ok, state} ->
-      with {:ok, transport, transport_header} <- build_transport_header(state, idx),
+      with {:ok, transport_header} <- build_transport_header(state, idx),
            {:ok, %{status: 200}} <- RTSP.setup(rtsp_session, control_path, transport_header) do
-        tracks = Map.update!(state.tracks, control_path, &%{&1 | transport: transport})
-        {:cont, {:ok, %{state | tracks: tracks}}}
+        {:cont, {:ok, state}}
       else
         error ->
           Membrane.Logger.debug(
@@ -153,16 +173,20 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   defp prepare_source(state) do
-    state =
-      %{state | status: :connected, reconnect_attempt: 0}
-      |> notify_parent({:tracks, Map.values(state.tracks)})
+    state = %{state | status: :connected, reconnect_attempt: 0}
 
-    receive do
-      :source_ready -> {:ok, state}
-    after
-      @source_ready_timeout ->
-        {:error, :source_ready_timeout, state}
-    end
+    transport_info =
+      case state.transport do
+        :tcp ->
+          {:tcp, RTSP.get_socket(state.rtsp_session)}
+
+        {:udp, port_range_start, _port_range_end} ->
+          {:udp, port_range_start, port_range_start + map_size(state.tracks) * 2}
+      end
+
+    notify_parent(state, %{tracks: Map.values(state.tracks), transport_info: transport_info})
+
+    {:ok, state}
   end
 
   defp play(%{rtsp_session: rtsp_session, transport: {:udp, _, _}} = state) do
@@ -181,8 +205,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   defp build_transport_header(%{transport: :tcp} = state, media_id) do
-    {:ok, RTSP.get_transport(state.rtsp_session),
-     [{"Transport", "RTP/AVP/TCP;unicast;interleaved=#{media_id * 2}-#{media_id * 2 + 1}"}]}
+    {:ok, [{"Transport", "RTP/AVP/TCP;unicast;interleaved=#{media_id * 2}-#{media_id * 2 + 1}"}]}
   end
 
   defp build_transport_header(%{transport: {:udp, port_range_start, port_range_end}}, media_id) do
@@ -191,8 +214,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     if rtp_port + 1 > port_range_end do
       {:error, :port_range_exceeded}
     else
-      {:ok, {rtp_port, rtp_port + 1},
-       [{"Transport", "RTP/AVP/UDP;unicast;client_port=#{rtp_port}-#{rtp_port + 1}"}]}
+      {:ok, [{"Transport", "RTP/AVP/UDP;unicast;client_port=#{rtp_port}-#{rtp_port + 1}"}]}
     end
   end
 
@@ -204,6 +226,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       state
       | keep_alive_timer: Process.send_after(self(), :keep_alive, state.keep_alive_interval)
     }
+  end
+
+  defp handle_rtsp_error(reason, state) do
+    Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
+    if state.rtsp_session != nil, do: RTSP.close(state.rtsp_session)
+
+    state = notify_parent(state, {:connection_failed, reason}) |> retry()
+    %{state | status: :failed}
   end
 
   defp cancel_keep_alive(state) do
@@ -225,6 +255,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
         :math.pow(2, attempt) * @base_back_off_time,
         @max_back_off_time
       )
+      |> trunc()
 
     Membrane.Logger.info("Retry connection in #{delay} ms")
     Process.send_after(self(), :connect, delay)
