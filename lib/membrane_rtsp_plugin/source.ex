@@ -111,7 +111,7 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_child_notification({:request_socket_control, socket, pid}, :tcp_source, _ctx, state) do
+  def handle_child_notification({:request_socket_control, _socket, pid}, :tcp_source, _ctx, state) do
     ConnectionManager.transfer_rtsp_socket_control(state.connection_manager, pid)
     {[], state}
   end

@@ -59,15 +59,14 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
   test "successful connection", %{opts: opts} do
     pid = :c.pid(0, 1, 1)
 
-    expect(RTSP.start(@stream_uri, _transport, _options), do: {:ok, pid})
+    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
 
     expect RTSP.describe(^pid, [{"accept", "application/sdp"}]) do
       {:ok, %Response{Response.new(200) | body: ExSDP.parse!(@sdp)}}
     end
 
     expect(RTSP.setup(^pid, _control, _headers), [num_calls: 3], do: {:ok, Response.new(200)})
-    expect(RTSP.play(^pid), do: {:ok, Response.new(200)})
-    expect(RTSP.get_transport(^pid), [num_calls: 3], do: %{})
+    expect(RTSP.get_socket(^pid), do: :socket)
 
     assert {:ok, state} = ConnectionManager.init(opts)
 
@@ -75,7 +74,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
     assert state.status == :connected
     assert state.rtsp_session == pid
 
-    assert_received {:tracks, tracks}
+    assert_received %{tracks: tracks, transport_info: {:tcp, :socket}}
     assert length(tracks) == 3
     assert [:application, :audio, :video] == Enum.map(tracks, & &1.type)
   end
@@ -83,8 +82,8 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
   test "failed connection", %{opts: opts} do
     pid = :c.pid(0, 1, 1)
 
-    expect(RTSP.start(@stream_uri, _transport, _options), do: {:error, :econnrefused})
-    expect(RTSP.start(@stream_uri, _transport, _options), do: {:ok, pid})
+    expect(RTSP.start(@stream_uri, _options), do: {:error, :econnrefused})
+    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
 
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(401)})
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(404)})

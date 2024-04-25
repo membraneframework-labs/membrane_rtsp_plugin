@@ -6,14 +6,11 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   require Membrane.Logger
 
   alias Membrane.RTSP
-  alias Membrane.RTSP.Source.Transport.TCPWrapper
 
   @content_type_header [{"accept", "application/sdp"}]
 
   @base_back_off_time Membrane.Time.milliseconds(10) |> Membrane.Time.as_milliseconds(:round)
   @max_back_off_time Membrane.Time.minutes(2) |> Membrane.Time.as_milliseconds(:round)
-
-  @source_ready_timeout Membrane.Time.seconds(5) |> Membrane.Time.as_milliseconds(:round)
 
   @type media_types :: [:video | :audio | :application]
   @type connection_opts :: %{stream_uri: binary(), allowed_media_types: media_types()}
@@ -204,7 +201,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     RTSP.play_no_response(rtsp_session)
   end
 
-  defp build_transport_header(%{transport: :tcp} = state, media_id) do
+  defp build_transport_header(%{transport: :tcp}, media_id) do
     {:ok, [{"Transport", "RTP/AVP/TCP;unicast;interleaved=#{media_id * 2}-#{media_id * 2 + 1}"}]}
   end
 
