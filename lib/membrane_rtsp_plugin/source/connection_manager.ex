@@ -52,10 +52,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
            {:ok, state} <- get_rtsp_description(state),
            {:ok, state} <- setup_rtsp_connection(state),
            {:ok, state} <- prepare_source(state) do
-        %{
-          state
-          | keep_alive_timer: Process.send_after(self(), :keep_alive, state.keep_alive_interval)
-        }
+        state
       else
         {:error, reason, state} -> handle_rtsp_error(reason, state)
       end
@@ -68,10 +65,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     state =
       case play(state) do
         :ok ->
-          %{
-            state
-            | keep_alive_timer: Process.send_after(self(), :keep_alive, state.keep_alive_interval)
-          }
+          %{state | keep_alive_timer: start_keep_alive_timer(state)}
 
         {:error, reason, state} ->
           handle_rtsp_error(reason, state)
@@ -215,14 +209,20 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
+  defp start_keep_alive_timer(%{keep_alive_interval: interval}) do
+    Process.send_after(self(), :keep_alive, interval |> Membrane.Time.as_milliseconds(:round))
+  end
+
   defp keep_alive(state) do
     Membrane.Logger.debug("Send GET_PARAMETER to keep session alive")
     RTSP.get_parameter_no_response(state.rtsp_session)
 
-    %{
-      state
-      | keep_alive_timer: Process.send_after(self(), :keep_alive, state.keep_alive_interval)
-    }
+    %{state | keep_alive_timer: start_keep_alive_timer(state)}
+  end
+
+  defp cancel_keep_alive(state) do
+    Process.cancel_timer(state.keep_alive_timer)
+    %{state | keep_alive_timer: nil}
   end
 
   defp handle_rtsp_error(reason, state) do
@@ -231,11 +231,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
     state = notify_parent(state, {:connection_failed, reason}) |> retry()
     %{state | status: :failed}
-  end
-
-  defp cancel_keep_alive(state) do
-    Process.cancel_timer(state.keep_alive_timer)
-    %{state | keep_alive_timer: nil}
   end
 
   # notify the parent only once on successive failures
