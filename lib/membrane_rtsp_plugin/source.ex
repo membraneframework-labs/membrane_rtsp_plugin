@@ -68,6 +68,14 @@ defmodule Membrane.RTSP.Source do
     accepted_format: _any,
     availability: :on_request
 
+  defmodule ReadyNotifier do
+    use Membrane.Source
+
+    def handle_playing(_ctx, state) do
+      {[notify_parent: :ready], state}
+    end
+  end
+
   @impl true
   def handle_init(_ctx, options) do
     state =
