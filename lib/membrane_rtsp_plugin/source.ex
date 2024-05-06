@@ -185,9 +185,8 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_info({:connection_failed, reason}, ctx, state) do
-    {[remove_children: Map.keys(ctx.children), notify_parent: {:connection_failed, reason}],
-     state}
+  def handle_info({:connection_failed, reason}, _ctx, _state) do
+    raise "RTSP Connection failed, reason: #{inspect(reason)}"
   end
 
   @impl true
