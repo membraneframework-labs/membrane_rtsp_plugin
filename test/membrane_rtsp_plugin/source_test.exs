@@ -153,7 +153,7 @@ defmodule Membrane.RTSP.SourceTest do
       custom_args: %{
         port: port,
         dest_folder: tmp_dir,
-        transport: {:udp, 20000, 20020},
+        transport: {:udp, 20_000, 20_020},
         timeout: Membrane.Time.seconds(1),
         keep_alive_interval: Membrane.Time.seconds(10)
       }

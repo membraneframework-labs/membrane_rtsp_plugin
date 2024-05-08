@@ -22,8 +22,8 @@ defmodule Membrane.RTSP.Source do
   require Membrane.Logger
 
   alias __MODULE__.{ConnectionManager, ReadyNotifier}
-  alias Membrane.Time
   alias Membrane.RTP.RTSP.Decapsulator
+  alias Membrane.Time
 
   def_options stream_uri: [
                 spec: binary(),
@@ -68,8 +68,10 @@ defmodule Membrane.RTSP.Source do
     availability: :on_request
 
   defmodule ReadyNotifier do
+    @moduledoc false
     use Membrane.Source
 
+    @impl true
     def handle_playing(_ctx, state) do
       {[notify_parent: :ready], state}
     end
