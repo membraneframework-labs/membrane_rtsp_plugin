@@ -2,20 +2,19 @@ defmodule Membrane.RTSP.Source do
   @moduledoc """
   Source bin responsible for connecting to an RTSP server.
 
-  This element connects to an RTSP server, depayload and parse the received media if possible.
+  This element connects to an RTSP server, depayload and parses the received media if possible.
   If there's no suitable depayloader and parser, the raw payload is sent to the subsequent elements in
   the pipeline.
+
+  In case connection can't be established or is severed during streaming this bin will crash.
 
   The following codecs are depayloaded and parsed:
     * `H264`
     * `H265`
 
   ### Notifications
-    * `{:new_track, ssrc, track}` - sent when the track is parsed and available for consumption by the upper
-    elements. The output pad should be linked to receive the data.
-    * `{:connection_failed, reason}` - sent when the element cannot establish connection or a connection is lost
-    during streaming. This element will try to reconnect to the server, this event is sent only once even if the error
-    persist.
+    * `{:new_track, ssrc, track}` - sent when the track is parsed and available for consumption by the next
+    elements. An output pad `Pad.ref(:output, ssrc)` should be linked to receive the data.
   """
 
   use Membrane.Bin
@@ -81,7 +80,7 @@ defmodule Membrane.RTSP.Source do
     state =
       options
       |> Map.from_struct()
-      |> Map.merge(%{connection_manager: nil, tracks: [], ssrc_to_track: %{}, tcp_socket: nil})
+      |> Map.merge(%{connection_manager: nil, tracks: [], ssrc_to_track: %{}})
 
     {[], state}
   end
@@ -108,13 +107,15 @@ defmodule Membrane.RTSP.Source do
         _ctx,
         state
       ) do
-    if track = Enum.find(state.tracks, fn track -> track.rtpmap.payload_type == pt end) do
-      ssrc_to_track = Map.put(state.ssrc_to_track, ssrc, track)
+    case Enum.find(state.tracks, fn track -> track.rtpmap.payload_type == pt end) do
+      nil ->
+        {[], state}
 
-      {[notify_parent: {:new_track, ssrc, Map.delete(track, :transport)}],
-       %{state | ssrc_to_track: ssrc_to_track}}
-    else
-      {[], state}
+      track ->
+        ssrc_to_track = Map.put(state.ssrc_to_track, ssrc, track)
+
+        {[notify_parent: {:new_track, ssrc, Map.delete(track, :transport)}],
+         %{state | ssrc_to_track: ssrc_to_track}}
     end
   end
 
@@ -133,19 +134,6 @@ defmodule Membrane.RTSP.Source do
   @impl true
   def handle_child_notification(_notification, _element, _ctx, state) do
     {[], state}
-  end
-
-  @impl true
-  def handle_pad_added(Pad.ref(:output, ssrc) = pad, _ctx, state) do
-    track = Map.fetch!(state.ssrc_to_track, ssrc)
-
-    spec =
-      get_child(:rtp_session)
-      |> via_out(Pad.ref(:output, ssrc), options: [depayloader: get_rtp_depayloader(track)])
-      |> parser(track)
-      |> bin_output(pad)
-
-    {[spec: spec], state}
   end
 
   @impl true
@@ -177,7 +165,7 @@ defmodule Membrane.RTSP.Source do
               |> get_child(:rtp_session)
             ]
 
-        {[spec: spec], %{state | tracks: tracks, tcp_socket: tcp_socket}}
+        {[spec: spec], %{state | tracks: tracks}}
 
       {:udp, min_port, max_port} ->
         spec =
@@ -200,6 +188,19 @@ defmodule Membrane.RTSP.Source do
   @impl true
   def handle_info(_message, _ctx, state) do
     {[], state}
+  end
+
+  @impl true
+  def handle_pad_added(Pad.ref(:output, ssrc) = pad, _ctx, state) do
+    track = Map.fetch!(state.ssrc_to_track, ssrc)
+
+    spec =
+      get_child(:rtp_session)
+      |> via_out(Pad.ref(:output, ssrc), options: [depayloader: get_rtp_depayloader(track)])
+      |> parser(track)
+      |> bin_output(pad)
+
+    {[spec: spec], state}
   end
 
   @impl true
