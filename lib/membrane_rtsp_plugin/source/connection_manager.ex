@@ -33,9 +33,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       Map.merge(options, %{
         rtsp_session: nil,
         tracks: [],
-        status: :init,
-        keep_alive_timer: nil,
-        reconnect_attempt: 0
+        keep_alive_timer: nil
       })
 
     Process.send_after(self(), :connect, 0)
@@ -140,8 +138,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   defp prepare_source(state) do
-    state = %{state | status: :connected, reconnect_attempt: 0}
-
     transport_info =
       case state.transport do
         :tcp ->
@@ -202,9 +198,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
     raise "RTSP connection failed, reason: #{inspect(reason)}"
   end
-
-  # notify the parent only once on successive failures
-  defp notify_parent(%{status: :failed} = state, _msg), do: state
 
   defp notify_parent(state, msg) do
     send(state.parent_pid, msg)

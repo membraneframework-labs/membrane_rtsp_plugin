@@ -30,8 +30,8 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
       stream_uri: @stream_uri,
       allowed_media_types: @allowed_media_types,
       transport: :tcp,
-      timeout: :timer.seconds(15),
-      keep_alive_interval: :timer.seconds(15),
+      timeout: Membrane.Time.seconds(15),
+      keep_alive_interval: Membrane.Time.seconds(15),
       parent_pid: self()
     }
 
@@ -44,14 +44,12 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
               stream_uri: @stream_uri,
               allowed_media_types: @allowed_media_types,
               transport: :tcp,
-              timeout: :timer.seconds(15),
-              keep_alive_interval: :timer.seconds(15),
+              timeout: Membrane.Time.seconds(15),
+              keep_alive_interval: Membrane.Time.seconds(15),
               rtsp_session: nil,
               tracks: [],
               keep_alive_timer: nil,
-              status: :init,
-              parent_pid: self(),
-              reconnect_attempt: 0
+              parent_pid: self()
             }} ==
              ConnectionManager.init(opts)
   end
@@ -71,7 +69,6 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
     assert {:ok, state} = ConnectionManager.init(opts)
 
     assert {:noreply, state} = ConnectionManager.handle_info(:connect, state)
-    assert state.status == :connected
     assert state.rtsp_session == pid
 
     assert_received %{tracks: tracks, transport_info: {:tcp, :socket}}

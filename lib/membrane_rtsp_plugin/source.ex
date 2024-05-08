@@ -138,8 +138,6 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_info(%{tracks: tracks, transport_info: transport_info}, _ctx, state) do
-    Membrane.Logger.info("Received tracks: #{inspect(tracks)}")
-
     fmt_mapping =
       Enum.map(tracks, fn %{rtpmap: rtpmap} ->
         {rtpmap.payload_type, {String.to_atom(rtpmap.encoding), rtpmap.clock_rate}}
