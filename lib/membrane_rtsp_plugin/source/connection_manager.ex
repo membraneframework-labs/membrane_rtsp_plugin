@@ -192,6 +192,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     %{state | keep_alive_timer: start_keep_alive_timer(state)}
   end
 
+  @spec handle_rtsp_error(any(), map()) :: no_return()
   defp handle_rtsp_error(reason, state) do
     Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
     if state.rtsp_session != nil, do: RTSP.close(state.rtsp_session)
