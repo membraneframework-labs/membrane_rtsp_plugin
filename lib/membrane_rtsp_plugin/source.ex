@@ -181,11 +181,6 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_info({:connection_failed, reason}, _ctx, _state) do
-    raise "RTSP Connection failed, reason: #{inspect(reason)}"
-  end
-
-  @impl true
   def handle_info(_message, _ctx, state) do
     {[], state}
   end

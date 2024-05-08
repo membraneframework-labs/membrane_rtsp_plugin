@@ -9,9 +9,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   @content_type_header [{"accept", "application/sdp"}]
 
-  @base_back_off_time Membrane.Time.milliseconds(10) |> Membrane.Time.as_milliseconds(:round)
-  @max_back_off_time Membrane.Time.minutes(2) |> Membrane.Time.as_milliseconds(:round)
-
   @type media_types :: [:video | :audio | :application]
   @type connection_opts :: %{stream_uri: binary(), allowed_media_types: media_types()}
 
@@ -80,24 +77,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, pid, reason}, %{rtsp_session: pid} = state) do
-    state =
-      case state.status do
-        :connected ->
-          state
-          |> notify_parent({:connection_failed, reason})
-          |> cancel_keep_alive()
-          |> retry()
-          |> then(&%{&1 | status: :failed})
-
-        _other ->
-          state
-      end
-
-    {:noreply, %{state | rtsp_session: nil}}
-  end
-
-  @impl true
   def handle_info(message, state) do
     Membrane.Logger.warning("received unexpected message: #{inspect(message)}")
     {:noreply, state}
@@ -105,7 +84,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   @impl true
   def handle_call(:stop, _from, state) do
-    Membrane.RTSP.close(state.rtsp_session)
+    RTSP.close(state.rtsp_session)
     {:stop, :normal, :ok, state}
   end
 
@@ -115,11 +94,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   defp start_rtsp_connection(state) do
-    options = [response_timeout: state.timeout, controlling_process: state.parent_pid]
-
-    case RTSP.start(state.stream_uri, options) do
+    case RTSP.start_link(state.stream_uri, response_timeout: state.timeout) do
       {:ok, session} ->
-        Process.monitor(session)
         {:ok, %{state | rtsp_session: session}}
 
       {:error, reason} ->
@@ -220,17 +196,11 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     %{state | keep_alive_timer: start_keep_alive_timer(state)}
   end
 
-  defp cancel_keep_alive(state) do
-    Process.cancel_timer(state.keep_alive_timer)
-    %{state | keep_alive_timer: nil}
-  end
-
   defp handle_rtsp_error(reason, state) do
     Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
     if state.rtsp_session != nil, do: RTSP.close(state.rtsp_session)
 
-    state = notify_parent(state, {:connection_failed, reason}) |> retry()
-    %{state | status: :failed}
+    raise "RTSP connection failed, reason: #{inspect(reason)}"
   end
 
   # notify the parent only once on successive failures
@@ -239,19 +209,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   defp notify_parent(state, msg) do
     send(state.parent_pid, msg)
     state
-  end
-
-  defp retry(%{reconnect_attempt: attempt} = state) do
-    delay =
-      min(
-        :math.pow(2, attempt) * @base_back_off_time,
-        @max_back_off_time
-      )
-      |> trunc()
-
-    Membrane.Logger.info("Retry connection in #{delay} ms")
-    Process.send_after(self(), :connect, delay)
-    %{state | reconnect_attempt: attempt + 1}
   end
 
   defp get_tracks(%{body: %ExSDP{media: media_list}}, stream_types) do

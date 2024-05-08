@@ -59,7 +59,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
   test "successful connection", %{opts: opts} do
     pid = :c.pid(0, 1, 1)
 
-    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
+    expect(RTSP.start_link(@stream_uri, _options), do: {:ok, pid})
 
     expect RTSP.describe(^pid, [{"accept", "application/sdp"}]) do
       {:ok, %Response{Response.new(200) | body: ExSDP.parse!(@sdp)}}
@@ -82,36 +82,20 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
   test "failed connection", %{opts: opts} do
     pid = :c.pid(0, 1, 1)
 
-    expect(RTSP.start(@stream_uri, _options), do: {:error, :econnrefused})
-    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
+    expect(RTSP.start_link(@stream_uri, _options), do: {:error, :econnrefused})
+    expect(RTSP.start_link(@stream_uri, _options), do: {:ok, pid})
 
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(401)})
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(404)})
 
     assert {:ok, state} = ConnectionManager.init(opts)
-    assert {:noreply, %{status: :failed} = state} = ConnectionManager.handle_info(:connect, state)
-    assert_received {:connection_failed, :econnrefused}
 
-    assert {:noreply, %{status: :failed}} = ConnectionManager.handle_info(:connect, state)
-    refute_received {:connection_failed, :setting_up_sdp_connection_failed}
-  end
+    assert_raise RuntimeError,
+                 "RTSP connection failed, reason: :econnrefused",
+                 fn -> ConnectionManager.handle_info(:connect, state) end
 
-  test "lost connection reset state", %{opts: opts} do
-    pid = :c.pid(0, 1, 1)
-
-    assert {:ok, state} = ConnectionManager.init(opts)
-
-    state = %{
-      state
-      | parent_pid: self(),
-        rtsp_session: pid,
-        status: :connected,
-        keep_alive_timer: make_ref()
-    }
-
-    assert {:noreply, %{rtsp_session: nil, status: :failed, keep_alive_timer: nil}} =
-             ConnectionManager.handle_info({:DOWN, make_ref(), :process, pid, :crash}, state)
-
-    assert_received {:connection_failed, :crash}
+    assert_raise RuntimeError,
+                 "RTSP connection failed, reason: :getting_rtsp_description_failed",
+                 fn -> ConnectionManager.handle_info(:connect, state) end
   end
 end
