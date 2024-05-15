@@ -4,7 +4,7 @@ defmodule Membrane.RTSP.DecapsulatorTest do
   import Membrane.Testing.Assertions
   import Membrane.ChildrenSpec
 
-  alias Membrane.RTSP.Decapsulator
+  alias Membrane.RTSP.TCP.Decapsulator
   alias Membrane.Testing.{Pipeline, Sink, Source}
 
   @header_length 4

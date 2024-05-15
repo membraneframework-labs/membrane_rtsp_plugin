@@ -1,4 +1,4 @@
-defmodule Membrane.RTSP.Decapsulator do
+defmodule Membrane.RTSP.TCP.Decapsulator do
   @moduledoc """
   This element provides functionality of decapsulating RTP Packets and redirecting RTSP messages
   received in the same TCP stream established with RTSP. The encapsulation is described in

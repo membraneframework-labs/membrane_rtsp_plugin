@@ -22,7 +22,7 @@ defmodule Membrane.RTSP.Source do
   require Membrane.Logger
 
   alias __MODULE__.{ConnectionManager, ReadyNotifier}
-  alias Membrane.RTSP.Decapsulator
+  alias Membrane.RTSP.TCP.Decapsulator
   alias Membrane.Time
 
   def_options stream_uri: [
