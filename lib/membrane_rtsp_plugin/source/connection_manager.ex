@@ -144,7 +144,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
           {:tcp, RTSP.get_socket(state.rtsp_session)}
 
         {:udp, port_range_start, _port_range_end} ->
-          {:udp, port_range_start, port_range_start + map_size(state.tracks) * 2}
+          {:udp, port_range_start..(port_range_start + map_size(state.tracks) * 2)}
       end
 
     notify_parent(state, %{tracks: Map.values(state.tracks), transport_info: transport_info})

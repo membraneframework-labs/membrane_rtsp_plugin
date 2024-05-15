@@ -167,10 +167,10 @@ defmodule Membrane.RTSP.Source do
 
         {[spec: spec], %{state | tracks: tracks}}
 
-      {:udp, min_port, max_port} ->
+      {:udp, set_up_port_range} ->
         spec =
           common_spec ++
-            Enum.map(min_port..max_port, fn port ->
+            Enum.map(set_up_port_range, fn port ->
               child({:udp_source, make_ref()}, %Membrane.UDP.Source{local_port_no: port})
               |> via_in(Pad.ref(:rtp_input, make_ref()))
               |> get_child(:rtp_session)
