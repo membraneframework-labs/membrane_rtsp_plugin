@@ -69,6 +69,8 @@ defmodule Membrane.RTSP.Source do
 
   defmodule ReadyNotifier do
     @moduledoc false
+    # This element's only purpose is to send a notification to it's parent when it's entered playing
+    # state, meaning all it's siblings also did.
     use Membrane.Source
 
     @impl true
