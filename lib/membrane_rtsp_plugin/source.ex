@@ -21,9 +21,14 @@ defmodule Membrane.RTSP.Source do
 
   require Membrane.Logger
 
+  alias __MODULE__
   alias __MODULE__.{ConnectionManager, ReadyNotifier}
   alias Membrane.RTSP.TCP.Decapsulator
   alias Membrane.Time
+
+  @type transport ::
+          {:udp, port_range_start :: non_neg_integer(), port_range_end :: non_neg_integer()}
+          | :tcp
 
   def_options stream_uri: [
                 spec: binary(),
@@ -37,10 +42,7 @@ defmodule Membrane.RTSP.Source do
                 """
               ],
               transport: [
-                spec:
-                  {:udp, port_range_start :: non_neg_integer(),
-                   port_range_end :: non_neg_integer()}
-                  | :tcp,
+                spec: transport(),
                 default: :tcp,
                 description: """
                 Transport protocol that will be used in the established RTSP stream. In case of
@@ -67,6 +69,28 @@ defmodule Membrane.RTSP.Source do
     accepted_format: _any,
     availability: :on_request
 
+  defmodule State do
+    @moduledoc false
+    @type t :: %__MODULE__{
+            stream_uri: binary(),
+            allowed_media_types: ConnectionManager.media_types(),
+            transport: Source.transport(),
+            timeout: Time.t(),
+            keep_alive_interval: Time.t(),
+            connection_manager: ConnectionManager.t(),
+            tracks: [ConnectionManager.track()],
+            ssrc_to_track: %{non_neg_integer() => ConnectionManager.track()}
+          }
+
+    @enforce_keys [:stream_uri, :allowed_media_types, :transport, :timeout, :keep_alive_interval]
+    defstruct @enforce_keys ++
+                [
+                  connection_manager: nil,
+                  tracks: [],
+                  ssrc_to_track: %{}
+                ]
+  end
+
   defmodule ReadyNotifier do
     @moduledoc false
     # This element's only purpose is to send a notification to it's parent when it's entered playing
@@ -81,10 +105,7 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_init(_ctx, options) do
-    state =
-      options
-      |> Map.from_struct()
-      |> Map.merge(%{connection_manager: nil, tracks: [], ssrc_to_track: %{}})
+    state = struct(State, Map.from_struct(options))
 
     {[], state}
   end
@@ -141,7 +162,7 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_info(%{tracks: tracks, transport_info: transport_info}, _ctx, state) do
+  def handle_info(%{tracks: tracks}, _ctx, state) do
     fmt_mapping =
       Enum.map(tracks, fn %{rtpmap: rtpmap} ->
         {rtpmap.payload_type, {String.to_atom(rtpmap.encoding), rtpmap.clock_rate}}
@@ -153,14 +174,16 @@ defmodule Membrane.RTSP.Source do
       child(:ready_notifier, ReadyNotifier)
     ]
 
-    case transport_info do
-      {:tcp, tcp_socket} ->
+    case state.transport do
+      :tcp ->
+        {:tcp, socket} = List.first(tracks).transport
+
         spec =
           common_spec ++
             [
               child(:tcp_source, %Membrane.TCP.Source{
                 connection_side: :client,
-                local_socket: tcp_socket
+                local_socket: socket
               })
               |> child(:tcp_depayloader, Decapsulator)
               |> via_in(Pad.ref(:rtp_input, make_ref()))
@@ -169,13 +192,20 @@ defmodule Membrane.RTSP.Source do
 
         {[spec: spec], %{state | tracks: tracks}}
 
-      {:udp, set_up_port_range} ->
+      {:udp, _port_range_start, _port_range_end} ->
         spec =
           common_spec ++
-            Enum.map(set_up_port_range, fn port ->
-              child({:udp_source, make_ref()}, %Membrane.UDP.Source{local_port_no: port})
-              |> via_in(Pad.ref(:rtp_input, make_ref()))
-              |> get_child(:rtp_session)
+            Enum.flat_map(tracks, fn track ->
+              {:udp, rtp_port, rtcp_port} = track.transport
+
+              [
+                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtp_port})
+                |> via_in(Pad.ref(:rtp_input, make_ref()))
+                |> get_child(:rtp_session),
+                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtcp_port})
+                |> via_in(Pad.ref(:rtp_input, make_ref()))
+                |> get_child(:rtp_session)
+              ]
             end)
 
         {[spec: spec], %{state | tracks: tracks}}

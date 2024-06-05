@@ -71,7 +71,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
     assert {:noreply, state} = ConnectionManager.handle_info(:connect, state)
     assert state.rtsp_session == pid
 
-    assert_received %{tracks: tracks, transport_info: {:tcp, :socket}}
+    assert_received %{tracks: tracks}
     assert length(tracks) == 3
     assert [:application, :audio, :video] == Enum.map(tracks, & &1.type)
   end
