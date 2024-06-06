@@ -159,6 +159,9 @@ defmodule Membrane.RTSP.SourceTest do
       }
     ]
 
+    {:ok, blocking_socket1} = :gen_udp.open(20_000)
+    {:ok, blocking_socket2} = :gen_udp.open(20_003)
+
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
 
     assert_pipeline_notified(
@@ -181,6 +184,9 @@ defmodule Membrane.RTSP.SourceTest do
 
     Process.sleep(500)
     :ok = Membrane.Testing.Pipeline.terminate(pid)
+
+    :gen_udp.close(blocking_socket1)
+    :gen_udp.close(blocking_socket2)
 
     assert File.exists?(Path.join(tmp_dir, "out.h264"))
     assert File.exists?(Path.join(tmp_dir, "out.hevc"))
