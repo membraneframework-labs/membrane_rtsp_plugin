@@ -175,6 +175,43 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
+  @spec prepare_source(State.t()) :: connection_establishment_phase_return()
+  defp prepare_source(state) do
+    notify_parent(%{tracks: state.tracks}, state)
+
+    {:ok, state}
+  end
+
+  @spec play(State.t()) :: connection_establishment_phase_return()
+  defp play(%{rtsp_session: rtsp_session, transport: {:udp, _, _}} = state) do
+    Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
+
+    case RTSP.play(rtsp_session) do
+      {:ok, %{status: 200}} -> {:ok, state}
+      _error -> {:error, :play_rtsp_failed, state}
+    end
+  end
+
+  defp play(%{rtsp_session: rtsp_session, transport: :tcp} = state) do
+    Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
+
+    RTSP.play_no_response(rtsp_session)
+    {:ok, state}
+  end
+
+  @spec keep_alive(State.t()) :: State.t()
+  defp keep_alive(state) do
+    Membrane.Logger.debug("Send GET_PARAMETER to keep session alive")
+    RTSP.get_parameter_no_response(state.rtsp_session)
+
+    %{state | keep_alive_timer: start_keep_alive_timer(state)}
+  end
+
+  @spec start_keep_alive_timer(State.t()) :: reference()
+  defp start_keep_alive_timer(%{keep_alive_interval: interval}) do
+    Process.send_after(self(), :keep_alive, interval |> Membrane.Time.as_milliseconds(:round))
+  end
+
   @spec setup_rtsp_connection_with_tcp(RTSP.t(), [track()]) ::
           {:ok, tracks :: [track()]} | {:error, reason :: term()}
   defp setup_rtsp_connection_with_tcp(rtsp_session, tracks) do
@@ -182,13 +219,13 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
     tracks
     |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {track, idx}, {:ok, updated_tracks} ->
+    |> Enum.reduce_while({:ok, []}, fn {track, idx}, {:ok, set_up_tracks} ->
       transport_header =
         [{"Transport", "RTP/AVP/TCP;unicast;interleaved=#{idx * 2}-#{idx * 2 + 1}"}]
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
         {:ok, %{status: 200}} ->
-          {:cont, {:ok, [%{track | transport: {:tcp, socket}} | updated_tracks]}}
+          {:cont, {:ok, [%{track | transport: {:tcp, socket}} | set_up_tracks]}}
 
         error ->
           Membrane.Logger.debug(
@@ -232,14 +269,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
         {:ok, %{status: 200}} ->
-          updated_set_up_tracks = [%{track | transport: {:udp, port, port + 1}} | set_up_tracks]
+          set_up_tracks = [%{track | transport: {:udp, port, port + 1}} | set_up_tracks]
 
           setup_rtsp_connection_with_udp(
             rtsp_session,
             port + 2,
             max_port,
             rest_tracks,
-            updated_set_up_tracks
+            set_up_tracks
           )
 
         _other ->
@@ -260,43 +297,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
-  @spec prepare_source(State.t()) :: connection_establishment_phase_return()
-  defp prepare_source(state) do
-    notify_parent(state, %{tracks: state.tracks})
-
-    {:ok, state}
-  end
-
-  @spec play(State.t()) :: connection_establishment_phase_return()
-  defp play(%{rtsp_session: rtsp_session, transport: {:udp, _, _}} = state) do
-    Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
-
-    case RTSP.play(rtsp_session) do
-      {:ok, %{status: 200}} -> {:ok, state}
-      _error -> {:error, :play_rtsp_failed, state}
-    end
-  end
-
-  defp play(%{rtsp_session: rtsp_session, transport: :tcp} = state) do
-    Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
-
-    RTSP.play_no_response(rtsp_session)
-    {:ok, state}
-  end
-
-  @spec start_keep_alive_timer(State.t()) :: reference()
-  defp start_keep_alive_timer(%{keep_alive_interval: interval}) do
-    Process.send_after(self(), :keep_alive, interval |> Membrane.Time.as_milliseconds(:round))
-  end
-
-  @spec keep_alive(State.t()) :: State.t()
-  defp keep_alive(state) do
-    Membrane.Logger.debug("Send GET_PARAMETER to keep session alive")
-    RTSP.get_parameter_no_response(state.rtsp_session)
-
-    %{state | keep_alive_timer: start_keep_alive_timer(state)}
-  end
-
   @spec handle_rtsp_error(term(), State.t()) :: no_return()
   defp handle_rtsp_error(reason, state) do
     Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
@@ -305,8 +305,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     raise "RTSP connection failed, reason: #{inspect(reason)}"
   end
 
-  @spec notify_parent(State.t(), term()) :: State.t()
-  defp notify_parent(state, msg) do
+  @spec notify_parent(term(), State.t()) :: State.t()
+  defp notify_parent(msg, state) do
     send(state.parent_pid, msg)
     state
   end
