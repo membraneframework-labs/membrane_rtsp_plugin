@@ -37,7 +37,7 @@ defmodule Membrane.RTSP.Plugin.Mixfile do
   defp deps do
     [
       {:membrane_core, "~> 1.0"},
-      {:membrane_rtsp, "~> 0.7.0"},
+      {:membrane_rtsp, "~> 0.7.1"},
       {:membrane_rtp_plugin,
        github: "membraneframework/membrane_rtp_plugin",
        branch: "move-rtsp-decapsulator",

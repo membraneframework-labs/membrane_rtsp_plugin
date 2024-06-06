@@ -236,10 +236,12 @@ defmodule Membrane.RTSP.Source do
     {[terminate: :normal], state}
   end
 
+  @spec get_rtp_depayloader(ConnectionManager.track()) :: module() | nil
   defp get_rtp_depayloader(%{rtpmap: %{encoding: "H264"}}), do: Membrane.RTP.H264.Depayloader
   defp get_rtp_depayloader(%{rtpmap: %{encoding: "H265"}}), do: Membrane.RTP.H265.Depayloader
   defp get_rtp_depayloader(_track), do: nil
 
+  @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp parser(link_builder, %{rtpmap: %{encoding: "H264"}} = track) do
     sps = track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
     pps = track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
@@ -264,6 +266,7 @@ defmodule Membrane.RTSP.Source do
 
   # a strange issue with one of Milesight camera where the parameter sets has
   # <<0, 0, 0, 1>> at the end
+  @spec clean_parameter_set(binary()) :: binary()
   defp clean_parameter_set(ps) do
     case :binary.part(ps, byte_size(ps), -4) do
       <<0, 0, 0, 1>> -> :binary.part(ps, 0, byte_size(ps) - 4)

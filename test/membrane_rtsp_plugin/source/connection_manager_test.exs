@@ -40,7 +40,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
 
   test "initialize state", %{opts: opts} do
     assert {:ok,
-            %{
+            %ConnectionManager.State{
               stream_uri: @stream_uri,
               allowed_media_types: @allowed_media_types,
               transport: :tcp,
