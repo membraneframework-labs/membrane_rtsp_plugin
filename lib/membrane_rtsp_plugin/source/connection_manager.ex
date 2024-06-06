@@ -246,7 +246,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
         ) :: {:ok, tracks :: [track()]} | {:error, reason :: term()}
   defp setup_rtsp_connection_with_udp(
          rtsp_session,
-         min_port,
+         port,
          max_port,
          tracks,
          set_up_tracks \\ []
@@ -257,6 +257,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   defp setup_rtsp_connection_with_udp(_rtsp_session, max_port, max_port, _tracks, _set_up_tracks) do
+    # when current port is equal to max_port the range is already exceeded, because port + 1 is also required.
     {:error, :port_range_exceeded}
   end
 
