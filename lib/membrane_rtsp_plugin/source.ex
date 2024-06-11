@@ -162,7 +162,7 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_info(%{tracks: tracks}, _ctx, state) do
+  def handle_info(%{rtsp_session: rtsp_session, tracks: tracks}, _ctx, state) do
     fmt_mapping =
       Enum.map(tracks, fn %{rtpmap: rtpmap} ->
         {rtpmap.payload_type, {String.to_atom(rtpmap.encoding), rtpmap.clock_rate}}
@@ -185,7 +185,7 @@ defmodule Membrane.RTSP.Source do
                 connection_side: :client,
                 local_socket: socket
               })
-              |> child(:tcp_depayloader, Decapsulator)
+              |> child(:tcp_depayloader, %Decapsulator{rtsp_session: rtsp_session})
               |> via_in(Pad.ref(:rtp_input, make_ref()))
               |> get_child(:rtp_session)
             ]

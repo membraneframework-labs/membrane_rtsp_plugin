@@ -177,7 +177,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   @spec prepare_source(State.t()) :: connection_establishment_phase_return()
   defp prepare_source(state) do
-    notify_parent(%{tracks: state.tracks}, state)
+    notify_parent(%{rtsp_session: state.rtsp_session, tracks: state.tracks}, state)
 
     {:ok, state}
   end
@@ -202,7 +202,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   @spec keep_alive(State.t()) :: State.t()
   defp keep_alive(state) do
     Membrane.Logger.debug("Send GET_PARAMETER to keep session alive")
-    RTSP.get_parameter_no_response(state.rtsp_session)
+
+    case state.transport do
+      :tcp ->
+        RTSP.get_parameter_no_response(state.rtsp_session)
+
+      {:udp, _port_range_start, _port_range_end} ->
+        {:ok, %{status: 200}} = RTSP.get_parameter(state.rtsp_session)
+    end
 
     %{state | keep_alive_timer: start_keep_alive_timer(state)}
   end
