@@ -38,11 +38,7 @@ defmodule Membrane.RTSP.Plugin.Mixfile do
     [
       {:membrane_core, "~> 1.0"},
       {:membrane_rtsp, "~> 0.7.1"},
-      {:membrane_rtp_plugin,
-       github: "membraneframework/membrane_rtp_plugin",
-       branch: "move-rtsp-decapsulator",
-       override: true},
-      # {:membrane_rtp_plugin, "~> 0.27.1"},
+      {:membrane_rtp_plugin, "~> 0.28.0"},
       {:membrane_rtp_h264_plugin, "~> 0.19.0"},
       {:membrane_rtp_h265_plugin, "~> 0.5.0"},
       {:membrane_tcp_plugin, "~> 0.4.0"},
