@@ -62,7 +62,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
     {[buffer: {:output, packets_buffers}], %{state | unprocessed_data: unprocessed_data}}
   end
 
-  @spec get_complete_packets(binary(), pid() | nil, [binary()]) ::
+  @spec get_complete_packets(binary(), RTSP.t() | nil, [binary()]) ::
           {unprocessed_data :: binary(), complete_packets :: [binary()]}
   defp get_complete_packets(packets_binary, rtsp_session, complete_packets \\ [])
 
@@ -94,10 +94,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
        ) do
     case RTSP.Response.verify_content_length(rtsp_message_start) do
       {:ok, _expected_length, _actual_length} ->
-        if rtsp_session != nil do
-          {:ok, %RTSP.Response{status: 200}} =
-            RTSP.handle_response(rtsp_session, rtsp_message_start)
-        end
+        handle_rtsp_response(rtsp_session, rtsp_message_start)
 
         {<<>>, complete_packets_binaries}
 
@@ -108,14 +105,30 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
         <<rtsp_message::binary-size(rtsp_message_length)-unit(8), rest::binary>> =
           rtsp_message_start
 
-        if rtsp_session != nil do
-          {:ok, %RTSP.Response{status: 200}} = RTSP.handle_response(rtsp_session, rtsp_message)
-        end
+        handle_rtsp_response(rtsp_session, rtsp_message)
 
         get_complete_packets(rest, rtsp_session, complete_packets_binaries)
 
       {:error, expected_length, actual_length} when actual_length <= expected_length ->
         {rtsp_message_start, Enum.reverse(complete_packets_binaries)}
+    end
+  end
+
+  @spec handle_rtsp_response(RTSP.t() | nil, binary()) :: :ok | {:error, reason :: atom()}
+  defp handle_rtsp_response(nil, _response) do
+    :ok
+  end
+
+  defp handle_rtsp_response(session, response) do
+    case RTSP.handle_response(session, response) do
+      {:ok, %RTSP.Response{status: 200}} ->
+        :ok
+
+      {:ok, %RTSP.Response{status: 401}} ->
+        RTSP.get_parameter_no_response(session)
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 end
