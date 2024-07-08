@@ -31,8 +31,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     RTSP.transfer_socket_control(rtsp_session, new_controller)
   end
 
-  @spec initialize_connection(State.t()) :: State.t()
-  def initialize_connection(state) do
+  @spec establish_connection(State.t()) :: State.t()
+  def establish_connection(state) do
     state =
       with {:ok, state} <- start_rtsp_connection(state),
            {:ok, state} <- get_rtsp_description(state),

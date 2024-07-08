@@ -49,7 +49,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
     expect(RTSP.setup(^pid, _control, _headers), [num_calls: 3], do: {:ok, Response.new(200)})
     expect(RTSP.get_socket(^pid), do: :socket)
 
-    assert state = ConnectionManager.initialize_connection(state)
+    assert state = ConnectionManager.establish_connection(state)
 
     assert state = ConnectionManager.play(state)
     assert state.rtsp_session == pid
@@ -69,10 +69,10 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
 
     assert_raise RuntimeError,
                  "RTSP connection failed, reason: :econnrefused",
-                 fn -> ConnectionManager.initialize_connection(state) end
+                 fn -> ConnectionManager.establish_connection(state) end
 
     assert_raise RuntimeError,
                  "RTSP connection failed, reason: :getting_rtsp_description_failed",
-                 fn -> ConnectionManager.initialize_connection(state) end
+                 fn -> ConnectionManager.establish_connection(state) end
   end
 end

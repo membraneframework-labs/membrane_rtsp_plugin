@@ -101,7 +101,7 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_setup(_ctx, state) do
-    state = ConnectionManager.initialize_connection(state)
+    state = ConnectionManager.establish_connection(state)
     {[spec: create_sources_spec(state)], state}
   end
 
