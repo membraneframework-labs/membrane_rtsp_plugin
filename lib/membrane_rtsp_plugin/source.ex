@@ -23,8 +23,7 @@ defmodule Membrane.RTSP.Source do
 
   alias __MODULE__
   alias __MODULE__.ConnectionManager
-  alias Membrane.RTSP.TCP.Decapsulator
-  alias Membrane.Time
+  alias Membrane.{RTSP, Time}
 
   @type transport ::
           {:udp, port_range_start :: non_neg_integer(), port_range_end :: non_neg_integer()}
@@ -77,17 +76,19 @@ defmodule Membrane.RTSP.Source do
             transport: Source.transport(),
             timeout: Time.t(),
             keep_alive_interval: Time.t(),
-            connection_manager: ConnectionManager.t(),
             tracks: [ConnectionManager.track()],
-            ssrc_to_track: %{non_neg_integer() => ConnectionManager.track()}
+            ssrc_to_track: %{non_neg_integer() => ConnectionManager.track()},
+            rtsp_session: Membrane.RTSP.t() | nil,
+            keep_alive_timer: reference() | nil
           }
 
     @enforce_keys [:stream_uri, :allowed_media_types, :transport, :timeout, :keep_alive_interval]
     defstruct @enforce_keys ++
                 [
-                  connection_manager: nil,
                   tracks: [],
-                  ssrc_to_track: %{}
+                  ssrc_to_track: %{},
+                  rtsp_session: nil,
+                  keep_alive_timer: nil
                 ]
   end
 
@@ -100,17 +101,8 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_setup(_ctx, state) do
-    opts =
-      Map.take(state, [
-        :stream_uri,
-        :allowed_media_types,
-        :transport,
-        :timeout,
-        :keep_alive_interval
-      ])
-
-    {:ok, connection_manager} = ConnectionManager.start_link(opts)
-    {[], %{state | connection_manager: connection_manager}}
+    state = ConnectionManager.initialize_connection(state)
+    {[spec: create_sources_spec(state)], state}
   end
 
   @impl true
@@ -134,7 +126,7 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_child_notification({:request_socket_control, _socket, pid}, :tcp_source, _ctx, state) do
-    ConnectionManager.transfer_rtsp_socket_control(state.connection_manager, pid)
+    RTSP.transfer_socket_control(state.rtsp_session, pid)
     {[], state}
   end
 
@@ -145,8 +137,7 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_child_playing(:rtp_session, _ctx, state) do
-    send(state.connection_manager, :source_ready)
-    {[], state}
+    {[], ConnectionManager.play(state)}
   end
 
   @impl true
@@ -155,48 +146,8 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_info(%{rtsp_session: rtsp_session, tracks: tracks}, _ctx, state) do
-    fmt_mapping =
-      Enum.map(tracks, fn %{rtpmap: rtpmap} ->
-        {rtpmap.payload_type, {String.to_atom(rtpmap.encoding), rtpmap.clock_rate}}
-      end)
-      |> Enum.into(%{})
-
-    case state.transport do
-      :tcp ->
-        {:tcp, socket} = List.first(tracks).transport
-
-        spec =
-          child(:tcp_source, %Membrane.TCP.Source{
-            connection_side: :client,
-            local_socket: socket
-          })
-          |> child(:tcp_depayloader, %Decapsulator{rtsp_session: rtsp_session})
-          |> via_in(Pad.ref(:rtp_input, make_ref()))
-          |> child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})
-
-        {[spec: spec], %{state | tracks: tracks}}
-
-      {:udp, _port_range_start, _port_range_end} ->
-        spec =
-          [
-            child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})
-            | Enum.flat_map(tracks, fn track ->
-                {:udp, rtp_port, rtcp_port} = track.transport
-
-                [
-                  child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtp_port})
-                  |> via_in(Pad.ref(:rtp_input, make_ref()))
-                  |> get_child(:rtp_session),
-                  child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtcp_port})
-                  |> via_in(Pad.ref(:rtp_input, make_ref()))
-                  |> get_child(:rtp_session)
-                ]
-              end)
-          ]
-
-        {[spec: spec], %{state | tracks: tracks}}
-    end
+  def handle_info(:keep_alive, _ctx, state) do
+    {[], ConnectionManager.keep_alive(state)}
   end
 
   @impl true
@@ -219,8 +170,46 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_terminate_request(_ctx, state) do
-    ConnectionManager.stop(state.connection_manager)
     {[terminate: :normal], state}
+  end
+
+  @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
+  defp create_sources_spec(state) do
+    fmt_mapping =
+      Enum.map(state.tracks, fn %{rtpmap: rtpmap} ->
+        {rtpmap.payload_type, {String.to_atom(rtpmap.encoding), rtpmap.clock_rate}}
+      end)
+      |> Enum.into(%{})
+
+    case state.transport do
+      :tcp ->
+        {:tcp, socket} = List.first(state.tracks).transport
+
+        child(:tcp_source, %Membrane.TCP.Source{
+          connection_side: :client,
+          local_socket: socket
+        })
+        |> child(:tcp_depayloader, %RTSP.TCP.Decapsulator{rtsp_session: state.rtsp_session})
+        |> via_in(Pad.ref(:rtp_input, make_ref()))
+        |> child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})
+
+      {:udp, _port_range_start, _port_range_end} ->
+        [
+          child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})
+          | Enum.flat_map(state.tracks, fn track ->
+              {:udp, rtp_port, rtcp_port} = track.transport
+
+              [
+                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtp_port})
+                |> via_in(Pad.ref(:rtp_input, make_ref()))
+                |> get_child(:rtp_session),
+                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtcp_port})
+                |> via_in(Pad.ref(:rtp_input, make_ref()))
+                |> get_child(:rtp_session)
+              ]
+            end)
+        ]
+    end
   end
 
   @spec get_rtp_depayloader(ConnectionManager.track()) :: module() | nil
