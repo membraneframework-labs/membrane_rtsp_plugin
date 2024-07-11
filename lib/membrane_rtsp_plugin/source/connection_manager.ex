@@ -62,7 +62,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
 
     RTSP.play_no_response(state.rtsp_session)
-    state
+    %{state | keep_alive_timer: start_keep_alive_timer(state)}
   end
 
   @spec keep_alive(State.t()) :: State.t()
