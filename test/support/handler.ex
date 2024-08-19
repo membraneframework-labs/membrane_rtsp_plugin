@@ -26,7 +26,7 @@ defmodule Membrane.RTSP.RequestHandler do
   """
 
   @impl true
-  def handle_open_connection(_conn) do
+  def handle_open_connection(conn) do
     sources = %{
       H264: %{
         encoding: :H264,
@@ -50,7 +50,8 @@ defmodule Membrane.RTSP.RequestHandler do
 
     %{
       sources: sources,
-      pipeline_pid: nil
+      pipeline_pid: nil,
+      socket: conn
     }
   end
 
@@ -80,8 +81,10 @@ defmodule Membrane.RTSP.RequestHandler do
         Map.put(sources, source_key, Map.merge(state.sources[source_key], config))
       end)
 
+    arg = %{sources: Map.values(sources), socket: state.socket}
+
     {:ok, _sup_pid, pipeline_pid} =
-      Membrane.RTSP.ServerPipeline.start_link(Map.values(sources))
+      Membrane.RTSP.ServerPipeline.start_link(arg)
 
     {Response.new(200), %{state | pipeline_pid: pipeline_pid}}
   end
@@ -93,6 +96,7 @@ defmodule Membrane.RTSP.RequestHandler do
 
   @impl true
   def handle_teardown(state) do
+    :gen_tcp.close(state.socket)
     {Response.new(200), state}
   end
 

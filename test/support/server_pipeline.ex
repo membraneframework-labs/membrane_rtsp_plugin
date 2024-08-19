@@ -87,9 +87,9 @@ defmodule Membrane.RTSP.ServerPipeline do
     plain: Membrane.RTP.Plain.Payloader
   }
 
-  @spec start_link(list()) :: Membrane.Pipeline.on_start()
-  def start_link(sources) do
-    Membrane.Pipeline.start_link(__MODULE__, sources)
+  @spec start_link(%{sources: list(), socket: :gen_tcp.socket()}) :: Membrane.Pipeline.on_start()
+  def start_link(config) do
+    Membrane.Pipeline.start_link(__MODULE__, config)
   end
 
   @impl true
@@ -99,7 +99,7 @@ defmodule Membrane.RTSP.ServerPipeline do
   end
 
   @impl true
-  def handle_init(_ctx, sources) do
+  def handle_init(_ctx, %{sources: sources, socket: socket}) do
     spec =
       [child(:session_bin, Membrane.RTP.SessionBin)] ++
         Enum.flat_map(sources, fn source ->
@@ -117,12 +117,13 @@ defmodule Membrane.RTSP.ServerPipeline do
           ]
         end)
 
-    {[spec: spec], %{total_sources: length(sources), ended_stream: 0}}
+    {[spec: spec], %{total_sources: length(sources), ended_stream: 0, socket: socket}}
   end
 
   @impl true
   def handle_element_end_of_stream({:sink, _ref}, _pad, _ctx, state) do
     if state.ended_stream + 1 == state.total_sources do
+      :gen_tcp.close(state.socket)
       {[terminate: :shutdown], state}
     else
       {[], %{state | ended_stream: state.ended_stream + 1}}

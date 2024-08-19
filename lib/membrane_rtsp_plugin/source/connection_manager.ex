@@ -15,16 +15,10 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   @type track_transport ::
           {:tcp, :gen_tcp.socket()}
           | {:udp, rtp_port :: :inet.port_number(), rtcp_port :: :inet.port_number()}
-  @type track :: %{
-          control_path: String.t(),
-          type: :video | :audio | :application,
-          fmtp: ExSDP.Attribute.FMTP.t() | nil,
-          rtpmap: ExSDP.Attribute.RTPMapping.t() | nil,
+  @type track_setup_data :: %{
+          track: RTSP.Source.track(),
           transport: track_transport()
         }
-
-  @typep connection_establishment_phase_return() ::
-           {:ok, State.t()} | {:error, reason :: term(), State.t()}
 
   @spec transfer_rtsp_socket_control(RTSP.t(), pid()) :: :ok
   def transfer_rtsp_socket_control(rtsp_session, new_controller) do
@@ -35,8 +29,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   def establish_connection(state) do
     state =
       with {:ok, state} <- start_rtsp_connection(state),
-           {:ok, state} <- get_rtsp_description(state),
-           {:ok, state} <- setup_rtsp_connection(state) do
+           {:ok, state, tracks} <- get_rtsp_description(state),
+           {:ok, state} <- setup_rtsp_connection(tracks, state) do
         state
       else
         {:error, reason, state} -> handle_rtsp_error(reason, state)
@@ -80,12 +74,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     %{state | keep_alive_timer: start_keep_alive_timer(state)}
   end
 
-  @spec start_rtsp_connection(State.t()) :: connection_establishment_phase_return()
+  @spec start_rtsp_connection(State.t()) ::
+          {:ok, State.t()} | {:error, reason :: term(), State.t()}
   defp start_rtsp_connection(state) do
     case RTSP.start_link(state.stream_uri,
            response_timeout: Membrane.Time.as_milliseconds(state.timeout, :round)
          ) do
       {:ok, session} ->
+        Process.flag(:trap_exit, true)
         {:ok, %{state | rtsp_session: session}}
 
       {:error, reason} ->
@@ -93,14 +89,15 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
-  @spec get_rtsp_description(State.t()) :: connection_establishment_phase_return()
+  @spec get_rtsp_description(State.t()) ::
+          {:ok, State.t(), [RTSP.Source.track()]} | {:error, reason :: term(), State.t()}
   defp get_rtsp_description(%{rtsp_session: rtsp_session} = state, retry \\ true) do
     Membrane.Logger.debug("ConnectionManager: Getting RTSP description")
 
     case RTSP.describe(rtsp_session, @content_type_header) do
       {:ok, %{status: 200} = response} ->
         tracks = get_tracks(response, state.allowed_media_types)
-        {:ok, %{state | tracks: tracks}}
+        {:ok, state, tracks}
 
       {:ok, %{status: 401}} ->
         if retry, do: get_rtsp_description(state, false), else: {:error, :unauthorized, state}
@@ -110,9 +107,10 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
-  @spec setup_rtsp_connection(State.t()) :: connection_establishment_phase_return()
-  defp setup_rtsp_connection(%{transport: :tcp} = state) do
-    case setup_rtsp_connection_with_tcp(state.rtsp_session, state.tracks) do
+  @spec setup_rtsp_connection([RTSP.Source.track()], State.t()) ::
+          {:ok, State.t()} | {:error, reason :: term(), State.t()}
+  defp setup_rtsp_connection(tracks, %{transport: :tcp} = state) do
+    case setup_rtsp_connection_with_tcp(state.rtsp_session, tracks) do
       {:ok, tracks} -> {:ok, %{state | tracks: tracks}}
       {:error, reason} -> {:error, reason, state}
     end
@@ -130,8 +128,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     Process.send_after(self(), :keep_alive, interval |> Membrane.Time.as_milliseconds(:round))
   end
 
-  @spec setup_rtsp_connection_with_tcp(RTSP.t(), [track()]) ::
-          {:ok, tracks :: [track()]} | {:error, reason :: term()}
+  @spec setup_rtsp_connection_with_tcp(RTSP.t(), [RTSP.Source.track()]) ::
+          {:ok, tracks :: [RTSP.Source.track()]} | {:error, reason :: term()}
   defp setup_rtsp_connection_with_tcp(rtsp_session, tracks) do
     socket = RTSP.get_socket(rtsp_session)
 
@@ -159,9 +157,9 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
           RTSP.t(),
           :inet.port_number(),
           :inet.port_number(),
-          [track()],
-          [track()]
-        ) :: {:ok, tracks :: [track()]} | {:error, reason :: term()}
+          [RTSP.Source.track()],
+          [RTSP.Source.track()]
+        ) :: {:ok, tracks :: [RTSP.Source.track()]} | {:error, reason :: term()}
   defp setup_rtsp_connection_with_udp(
          rtsp_session,
          port,
@@ -224,7 +222,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     raise "RTSP connection failed, reason: #{inspect(reason)}"
   end
 
-  @spec get_tracks(RTSP.Response.t(), media_types()) :: [track()]
+  @spec get_tracks(RTSP.Response.t(), media_types()) :: [RTSP.Source.track()]
   defp get_tracks(%{body: %ExSDP{media: media_list}}, stream_types) do
     media_list
     |> Enum.filter(&(&1.type in stream_types))
@@ -233,8 +231,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
         control_path: get_attribute(media, "control", ""),
         type: media.type,
         rtpmap: get_attribute(media, ExSDP.Attribute.RTPMapping),
-        fmtp: get_attribute(media, ExSDP.Attribute.FMTP),
-        transport: nil
+        fmtp: get_attribute(media, ExSDP.Attribute.FMTP)
       }
     end)
   end

@@ -26,7 +26,8 @@ defmodule Membrane.RTSP.SourceTest do
           allowed_media_types: opts[:allowed_media_types] || [:video, :audio, :application],
           stream_uri: "rtsp://localhost:#{opts[:port]}/",
           timeout: opts[:timeout] || Membrane.Time.seconds(15),
-          keep_alive_interval: opts[:keep_alive_interval] || Membrane.Time.seconds(15)
+          keep_alive_interval: opts[:keep_alive_interval] || Membrane.Time.seconds(15),
+          on_connection_closed: opts[:on_connection_closed] || :raise_error
         })
 
       {[spec: spec], %{dest_folder: opts[:dest_folder]}}
@@ -155,7 +156,8 @@ defmodule Membrane.RTSP.SourceTest do
         dest_folder: tmp_dir,
         transport: {:udp, 20_000, 20_020},
         timeout: Membrane.Time.seconds(1),
-        keep_alive_interval: Membrane.Time.seconds(10)
+        keep_alive_interval: Membrane.Time.seconds(10),
+        on_connection_closed: :send_eos
       }
     ]
 
@@ -167,8 +169,10 @@ defmodule Membrane.RTSP.SourceTest do
     assert_pipeline_notified(
       pid,
       :source,
-      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H264"}}}
+      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H264"}} = track}
     )
+
+    IO.inspect(track, label: "track")
 
     assert_pipeline_notified(
       pid,
@@ -182,7 +186,10 @@ defmodule Membrane.RTSP.SourceTest do
       {:new_track, _ssrc, %{type: :application, rtpmap: %{encoding: "plain"}}}
     )
 
-    Process.sleep(500)
+    assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
+    assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
+    assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
+
     :ok = Membrane.Testing.Pipeline.terminate(pid)
 
     :gen_udp.close(blocking_socket1)

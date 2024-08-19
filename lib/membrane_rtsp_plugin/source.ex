@@ -28,6 +28,12 @@ defmodule Membrane.RTSP.Source do
   @type transport ::
           {:udp, port_range_start :: non_neg_integer(), port_range_end :: non_neg_integer()}
           | :tcp
+  @type track :: %{
+          control_path: String.t(),
+          type: :video | :audio | :application,
+          fmtp: ExSDP.Attribute.FMTP.t() | nil,
+          rtpmap: ExSDP.Attribute.RTPMapping.t() | nil
+        }
 
   def_options stream_uri: [
                 spec: binary(),
@@ -62,6 +68,15 @@ defmodule Membrane.RTSP.Source do
                 Interval of a heartbeat sent to the RTSP server at a regular interval to
                 keep the session alive.
                 """
+              ],
+              on_connection_closed: [
+                spec: :raise_error | :send_eos,
+                default: :raise_error,
+                description: """
+                Defines the element's behavior if the TCP connection is closed by the RTSP server:
+                - `:raise_error` - Raise an error.
+                - `:send_eos` - Send an `:end_of_stream` to the output pad.
+                """
               ]
 
   def_output_pad :output,
@@ -76,16 +91,24 @@ defmodule Membrane.RTSP.Source do
             transport: Source.transport(),
             timeout: Time.t(),
             keep_alive_interval: Time.t(),
-            tracks: [ConnectionManager.track()],
-            ssrc_to_track: %{non_neg_integer() => ConnectionManager.track()},
+            tracks_setup_data: [ConnectionManager.track_setup_data()],
+            ssrc_to_track: %{non_neg_integer() => Source.track()},
             rtsp_session: Membrane.RTSP.t() | nil,
-            keep_alive_timer: reference() | nil
+            keep_alive_timer: reference() | nil,
+            on_connection_closed: :raise_error | :send_eos
           }
 
-    @enforce_keys [:stream_uri, :allowed_media_types, :transport, :timeout, :keep_alive_interval]
+    @enforce_keys [
+      :stream_uri,
+      :allowed_media_types,
+      :transport,
+      :timeout,
+      :keep_alive_interval,
+      :on_connection_closed
+    ]
     defstruct @enforce_keys ++
                 [
-                  tracks: [],
+                  tracks_setup_data: [],
                   ssrc_to_track: %{},
                   rtsp_session: nil,
                   keep_alive_timer: nil
@@ -146,6 +169,30 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
+  def handle_info(
+        {:EXIT, rtsp_session, :socket_closed},
+        ctx,
+        %State{rtsp_session: rtsp_session, on_connection_closed: :send_eos} = state
+      ) do
+    notify_udp_sources_actions =
+      ctx.children
+      |> Map.keys()
+      |> Enum.filter(&match?({:udp_source, _ref}, &1))
+      |> Enum.map(&{:notify_child, {&1, :close_socket}})
+
+    {notify_udp_sources_actions, state}
+  end
+
+  @impl true
+  def handle_info(
+        {:EXIT, rtsp_session, reason},
+        _ctx,
+        %State{rtsp_session: rtsp_session} = state
+      ) do
+    {[terminate: {:rtsp_session_crash, reason}], state}
+  end
+
+  @impl true
   def handle_info(:keep_alive, _ctx, state) do
     {[], ConnectionManager.keep_alive(state)}
   end
@@ -200,10 +247,10 @@ defmodule Membrane.RTSP.Source do
               {:udp, rtp_port, rtcp_port} = track.transport
 
               [
-                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtp_port})
+                child({:udp_source, make_ref()}, %Membrane.UDP.Source{local_port_no: rtp_port})
                 |> via_in(Pad.ref(:rtp_input, make_ref()))
                 |> get_child(:rtp_session),
-                child({:udp, make_ref()}, %Membrane.UDP.Source{local_port_no: rtcp_port})
+                child({:udp_source, make_ref()}, %Membrane.UDP.Source{local_port_no: rtcp_port})
                 |> via_in(Pad.ref(:rtp_input, make_ref()))
                 |> get_child(:rtp_session)
               ]
