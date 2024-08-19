@@ -31,7 +31,8 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
       allowed_media_types: @allowed_media_types,
       transport: :tcp,
       timeout: Membrane.Time.seconds(15),
-      keep_alive_interval: Membrane.Time.seconds(15)
+      keep_alive_interval: Membrane.Time.seconds(15),
+      on_connection_closed: :raise_error
     }
 
     %{state: state}

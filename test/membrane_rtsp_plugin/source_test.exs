@@ -169,10 +169,8 @@ defmodule Membrane.RTSP.SourceTest do
     assert_pipeline_notified(
       pid,
       :source,
-      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H264"}} = track}
+      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H264"}}}
     )
-
-    IO.inspect(track, label: "track")
 
     assert_pipeline_notified(
       pid,

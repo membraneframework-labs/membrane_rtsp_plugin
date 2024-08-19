@@ -28,12 +28,6 @@ defmodule Membrane.RTSP.Source do
   @type transport ::
           {:udp, port_range_start :: non_neg_integer(), port_range_end :: non_neg_integer()}
           | :tcp
-  @type track :: %{
-          control_path: String.t(),
-          type: :video | :audio | :application,
-          fmtp: ExSDP.Attribute.FMTP.t() | nil,
-          rtpmap: ExSDP.Attribute.RTPMapping.t() | nil
-        }
 
   def_options stream_uri: [
                 spec: binary(),
@@ -91,8 +85,8 @@ defmodule Membrane.RTSP.Source do
             transport: Source.transport(),
             timeout: Time.t(),
             keep_alive_interval: Time.t(),
-            tracks_setup_data: [ConnectionManager.track_setup_data()],
-            ssrc_to_track: %{non_neg_integer() => Source.track()},
+            tracks: [ConnectionManager.track()],
+            ssrc_to_track: %{non_neg_integer() => ConnectionManager.track()},
             rtsp_session: Membrane.RTSP.t() | nil,
             keep_alive_timer: reference() | nil,
             on_connection_closed: :raise_error | :send_eos
@@ -108,7 +102,7 @@ defmodule Membrane.RTSP.Source do
     ]
     defstruct @enforce_keys ++
                 [
-                  tracks_setup_data: [],
+                  tracks: [],
                   ssrc_to_track: %{},
                   rtsp_session: nil,
                   keep_alive_timer: nil
@@ -234,7 +228,8 @@ defmodule Membrane.RTSP.Source do
 
         child(:tcp_source, %Membrane.TCP.Source{
           connection_side: :client,
-          local_socket: socket
+          local_socket: socket,
+          on_connection_closed: state.on_connection_closed
         })
         |> child(:tcp_depayloader, %RTSP.TCP.Decapsulator{rtsp_session: state.rtsp_session})
         |> via_in(Pad.ref(:rtp_input, make_ref()))
