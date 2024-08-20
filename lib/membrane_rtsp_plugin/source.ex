@@ -133,13 +133,18 @@ defmodule Membrane.RTSP.Source do
       ) do
     case Enum.find(state.tracks, fn track -> track.rtpmap.payload_type == pt end) do
       nil ->
-        {[], state}
+        raise "No track of payload type #{inspect(pt)} has been requested with SETUP"
 
       track ->
-        ssrc_to_track = Map.put(state.ssrc_to_track, ssrc, track)
+        ssrc_to_track = Map.put(state.ssrc_to_track, ssrc, Map.delete(track, :transport))
 
-        {[notify_parent: {:new_track, ssrc, Map.delete(track, :transport)}],
-         %{state | ssrc_to_track: ssrc_to_track}}
+        state = %{state | ssrc_to_track: ssrc_to_track}
+
+        if map_size(ssrc_to_track) == length(state.tracks) do
+          {[notify_parent: {:new_tracks, Map.to_list(ssrc_to_track)}], state}
+        else
+          {[], state}
+        end
     end
   end
 

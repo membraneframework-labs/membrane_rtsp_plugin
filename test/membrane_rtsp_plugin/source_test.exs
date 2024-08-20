@@ -33,20 +33,22 @@ defmodule Membrane.RTSP.SourceTest do
       {[spec: spec], %{dest_folder: opts[:dest_folder]}}
     end
 
-    def handle_child_notification({:new_track, ssrc, track}, _element, _ctx, state) do
-      file_name =
-        case track.rtpmap.encoding do
-          "H264" -> "out.h264"
-          "H265" -> "out.hevc"
-          "plain" -> "out.txt"
-        end
-
+    def handle_child_notification({:new_tracks, tracks}, _element, _ctx, state) do
       spec =
-        get_child(:source)
-        |> via_out(Pad.ref(:output, ssrc))
-        |> child({:sink, ssrc}, %Membrane.File.Sink{
-          location: Path.join(state.dest_folder, file_name)
-        })
+        Enum.map(tracks, fn {ssrc, track} ->
+          file_name =
+            case track.rtpmap.encoding do
+              "H264" -> "out.h264"
+              "H265" -> "out.hevc"
+              "plain" -> "out.txt"
+            end
+
+          get_child(:source)
+          |> via_out(Pad.ref(:output, ssrc))
+          |> child({:sink, ssrc}, %Membrane.File.Sink{
+            location: Path.join(state.dest_folder, file_name)
+          })
+        end)
 
       {[spec: spec], state}
     end
@@ -84,23 +86,13 @@ defmodule Membrane.RTSP.SourceTest do
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
 
-    assert_pipeline_notified(
-      pid,
-      :source,
-      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H264"}}}
-    )
+    assert_pipeline_notified(pid, :source, {:new_tracks, tracks})
 
-    assert_pipeline_notified(
-      pid,
-      :source,
-      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H265"}}}
-    )
-
-    assert_pipeline_notified(
-      pid,
-      :source,
-      {:new_track, _ssrc, %{type: :application, rtpmap: %{encoding: "plain"}}}
-    )
+    assert [
+             {_ssrc1, %{type: :video, rtpmap: %{encoding: "H264"}}},
+             {_ssrc2, %{type: :video, rtpmap: %{encoding: "H265"}}},
+             {_ssrc3, %{type: :application, rtpmap: %{encoding: "plain"}}}
+           ] = Enum.sort_by(tracks, fn {_ssrc, %{rtpmap: %{encoding: encoding}}} -> encoding end)
 
     assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
     assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
@@ -138,7 +130,7 @@ defmodule Membrane.RTSP.SourceTest do
     assert_pipeline_notified(
       pid,
       :source,
-      {:new_track, _ssrc, %{type: :application, rtpmap: %{encoding: "plain"}}}
+      {:new_tracks, [{_ssrc, %{type: :application, rtpmap: %{encoding: "plain"}}}]}
     )
 
     assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
@@ -171,23 +163,13 @@ defmodule Membrane.RTSP.SourceTest do
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
 
-    assert_pipeline_notified(
-      pid,
-      :source,
-      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H264"}}}
-    )
+    assert_pipeline_notified(pid, :source, {:new_tracks, tracks})
 
-    assert_pipeline_notified(
-      pid,
-      :source,
-      {:new_track, _ssrc, %{type: :video, rtpmap: %{encoding: "H265"}}}
-    )
-
-    assert_pipeline_notified(
-      pid,
-      :source,
-      {:new_track, _ssrc, %{type: :application, rtpmap: %{encoding: "plain"}}}
-    )
+    assert [
+             {_ssrc1, %{type: :video, rtpmap: %{encoding: "H264"}}},
+             {_ssrc2, %{type: :video, rtpmap: %{encoding: "H265"}}},
+             {_ssrc3, %{type: :application, rtpmap: %{encoding: "plain"}}}
+           ] = Enum.sort_by(tracks, fn {_ssrc, %{rtpmap: %{encoding: encoding}}} -> encoding end)
 
     assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
     assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
