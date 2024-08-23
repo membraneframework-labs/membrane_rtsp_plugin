@@ -37,7 +37,7 @@ defmodule Membrane.RTSP.Plugin.Mixfile do
   defp deps do
     [
       {:membrane_core, "~> 1.1"},
-      {:membrane_rtsp, "~> 0.7.2"},
+      {:membrane_rtsp, "~> 0.8.0"},
       {:membrane_rtp_plugin, "~> 0.28.0"},
       {:membrane_rtp_h264_plugin, "~> 0.19.0"},
       {:membrane_rtp_h265_plugin, "~> 0.5.1"},
