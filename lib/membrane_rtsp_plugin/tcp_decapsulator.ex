@@ -125,7 +125,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
         :ok
 
       {:ok, %RTSP.Response{status: 401}} ->
-        RTSP.repeat_last_request_no_response(session)
+        RTSP.get_parameter_no_response(session)
 
       {:error, reason} ->
         {:error, reason}

@@ -79,7 +79,7 @@ defmodule Membrane.RTSP.SourceTest do
   test "stream all media using tcp", %{server_port: port, tmp_dir: tmp_dir} do
     options = [
       module: TestPipeline,
-      custom_args: %{port: port, dest_folder: tmp_dir}
+      custom_args: %{port: port, dest_folder: tmp_dir, on_connection_closed: :send_eos}
     ]
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
@@ -125,7 +125,12 @@ defmodule Membrane.RTSP.SourceTest do
   test "stream specific media using tcp", %{server_port: port, tmp_dir: tmp_dir} do
     options = [
       module: TestPipeline,
-      custom_args: %{port: port, dest_folder: tmp_dir, allowed_media_types: [:application]}
+      custom_args: %{
+        port: port,
+        dest_folder: tmp_dir,
+        allowed_media_types: [:application],
+        on_connection_closed: :send_eos
+      }
     ]
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
