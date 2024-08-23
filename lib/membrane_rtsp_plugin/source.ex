@@ -89,7 +89,8 @@ defmodule Membrane.RTSP.Source do
             ssrc_to_track: %{non_neg_integer() => ConnectionManager.track()},
             rtsp_session: Membrane.RTSP.t() | nil,
             keep_alive_timer: reference() | nil,
-            on_connection_closed: :raise_error | :send_eos
+            on_connection_closed: :raise_error | :send_eos,
+            end_of_stream: boolean()
           }
 
     @enforce_keys [
@@ -105,7 +106,8 @@ defmodule Membrane.RTSP.Source do
                   tracks: [],
                   ssrc_to_track: %{},
                   rtsp_session: nil,
-                  keep_alive_timer: nil
+                  keep_alive_timer: nil,
+                  end_of_stream: false
                 ]
   end
 
@@ -174,7 +176,7 @@ defmodule Membrane.RTSP.Source do
       |> Enum.filter(&match?({:udp_source, _ref}, &1))
       |> Enum.map(&{:notify_child, {&1, :close_socket}})
 
-    {notify_udp_sources_actions, state}
+    {notify_udp_sources_actions, %{state | end_of_stream: true}}
   end
 
   @impl true
@@ -187,7 +189,7 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_info(:keep_alive, _ctx, state) do
+  def handle_info(:keep_alive, _ctx, %{end_of_stream: false} = state) do
     {[], ConnectionManager.keep_alive(state)}
   end
 
