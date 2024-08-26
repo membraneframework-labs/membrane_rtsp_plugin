@@ -1,7 +1,7 @@
 defmodule Membrane.RTSP.RequestHandler do
   @moduledoc false
 
-  @behaviour Membrane.RTSP.Server.Handler
+  use Membrane.RTSP.Server.Handler
 
   require Logger
 
@@ -26,7 +26,7 @@ defmodule Membrane.RTSP.RequestHandler do
   """
 
   @impl true
-  def handle_open_connection(conn) do
+  def init(_config) do
     sources = %{
       H264: %{
         encoding: :H264,
@@ -51,8 +51,13 @@ defmodule Membrane.RTSP.RequestHandler do
     %{
       sources: sources,
       pipeline_pid: nil,
-      socket: conn
+      socket: nil
     }
+  end
+
+  @impl true
+  def handle_open_connection(conn, state) do
+    %{state | socket: conn}
   end
 
   @impl true
