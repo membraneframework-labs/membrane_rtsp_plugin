@@ -27,7 +27,7 @@ defmodule Membrane.RTSP.SourceTest do
           stream_uri: "rtsp://localhost:#{opts[:port]}/",
           timeout: opts[:timeout] || Membrane.Time.seconds(15),
           keep_alive_interval: opts[:keep_alive_interval] || Membrane.Time.seconds(15),
-          on_connection_closed: opts[:on_connection_closed] || :raise_error
+          on_connection_closed: :send_eos
         })
 
       {[spec: spec], %{dest_folder: opts[:dest_folder]}}
@@ -81,7 +81,7 @@ defmodule Membrane.RTSP.SourceTest do
   test "stream all media using tcp", %{server_port: port, tmp_dir: tmp_dir} do
     options = [
       module: TestPipeline,
-      custom_args: %{port: port, dest_folder: tmp_dir, on_connection_closed: :send_eos}
+      custom_args: %{port: port, dest_folder: tmp_dir}
     ]
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
@@ -120,8 +120,7 @@ defmodule Membrane.RTSP.SourceTest do
       custom_args: %{
         port: port,
         dest_folder: tmp_dir,
-        allowed_media_types: [:application],
-        on_connection_closed: :send_eos
+        allowed_media_types: [:application]
       }
     ]
 
@@ -153,8 +152,7 @@ defmodule Membrane.RTSP.SourceTest do
         dest_folder: tmp_dir,
         transport: {:udp, 20_000, 20_020},
         timeout: Membrane.Time.seconds(1),
-        keep_alive_interval: Membrane.Time.seconds(10),
-        on_connection_closed: :send_eos
+        keep_alive_interval: Membrane.Time.seconds(10)
       }
     ]
 
