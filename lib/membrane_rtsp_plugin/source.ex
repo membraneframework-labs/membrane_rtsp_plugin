@@ -12,9 +12,9 @@ defmodule Membrane.RTSP.Source do
     * `H264`
     * `H265`
 
-  ### Notifications
-    * `{:new_track, ssrc, track}` - sent when the track is parsed and available for consumption by the next
-    elements. An output pad `Pad.ref(:output, ssrc)` should be linked to receive the data.
+  When all tracks are parsed and available for further processing, this element will send a
+  `t:new_tracks/0` notification. The parent should link a pad `Pad.ref(:output, ssrc)` for each
+  received track.
   """
 
   use Membrane.Bin
@@ -24,6 +24,14 @@ defmodule Membrane.RTSP.Source do
   alias __MODULE__
   alias __MODULE__.ConnectionManager
   alias Membrane.{RTSP, Time}
+
+  @type new_tracks :: {:new_tracks, [{ssrc :: pos_integer(), track :: track()}]}
+  @type track :: %{
+          control_path: String.t(),
+          type: :video | :audio | :application,
+          fmtp: ExSDP.Attribute.FMTP.t() | nil,
+          rtpmap: ExSDP.Attribute.RTPMapping.t() | nil
+        }
 
   @type transport ::
           {:udp, port_range_start :: non_neg_integer(), port_range_end :: non_neg_integer()}
