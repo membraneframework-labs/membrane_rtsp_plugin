@@ -12,9 +12,10 @@ defmodule Membrane.RTSP.Source do
     * `H264`
     * `H265`
 
-  When all tracks are parsed and available for further processing, this element will send a
-  `t:new_tracks/0` notification. The parent should link a pad `Pad.ref(:output, ssrc)` for each
-  received track.
+  When the element finishes setting up all tracks it will send a `t:set_up_tracks/0` notification.
+  Each time a track is parsed and available for further processing the element will send a
+  `t:new_track/0` notification. An output pad `Pad.ref(:output, ssrc)` should be linked to receive
+  the data.
   """
 
   use Membrane.Bin
@@ -25,7 +26,8 @@ defmodule Membrane.RTSP.Source do
   alias __MODULE__.ConnectionManager
   alias Membrane.{RTSP, Time}
 
-  @type new_tracks :: {:new_tracks, [{ssrc :: pos_integer(), track :: track()}]}
+  @type set_up_tracks_notification :: {:set_up_tracks, [track()]}
+  @type new_track_notification :: {:new_track, ssrc :: pos_integer(), track :: track()}
   @type track :: %{
           control_path: String.t(),
           type: :video | :audio | :application,
@@ -129,7 +131,19 @@ defmodule Membrane.RTSP.Source do
   @impl true
   def handle_setup(_ctx, state) do
     state = ConnectionManager.establish_connection(state)
-    {[spec: create_sources_spec(state)], state}
+
+    {[spec: create_sources_spec(state), notify_parent: get_set_up_tracks_notification(state)],
+     state}
+  end
+
+  @impl true
+  def handle_child_playing(:rtp_session, _ctx, state) do
+    {[], ConnectionManager.play(state)}
+  end
+
+  @impl true
+  def handle_child_playing(_child, _ctx, state) do
+    {[], state}
   end
 
   @impl true
@@ -144,15 +158,10 @@ defmodule Membrane.RTSP.Source do
         raise "No track of payload type #{inspect(pt)} has been requested with SETUP"
 
       track ->
-        ssrc_to_track = Map.put(state.ssrc_to_track, ssrc, Map.delete(track, :transport))
+        ssrc_to_track = Map.put(state.ssrc_to_track, ssrc, track)
 
-        state = %{state | ssrc_to_track: ssrc_to_track}
-
-        if map_size(ssrc_to_track) == length(state.tracks) do
-          {[notify_parent: {:new_tracks, Map.to_list(ssrc_to_track)}], state}
-        else
-          {[], state}
-        end
+        {[notify_parent: {:new_track, ssrc, Map.delete(track, :transport)}],
+         %{state | ssrc_to_track: ssrc_to_track}}
     end
   end
 
@@ -164,16 +173,6 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_child_notification(_notification, _element, _ctx, state) do
-    {[], state}
-  end
-
-  @impl true
-  def handle_child_playing(:rtp_session, _ctx, state) do
-    {[], ConnectionManager.play(state)}
-  end
-
-  @impl true
-  def handle_child_playing(_child, _ctx, state) do
     {[], state}
   end
 
@@ -229,13 +228,17 @@ defmodule Membrane.RTSP.Source do
     {[terminate: :normal], state}
   end
 
+  @spec get_set_up_tracks_notification(State.t()) :: set_up_tracks_notification()
+  def get_set_up_tracks_notification(state) do
+    {:set_up_tracks, Enum.map(state.tracks, &Map.delete(&1, :transport))}
+  end
+
   @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
   defp create_sources_spec(state) do
     fmt_mapping =
-      Enum.map(state.tracks, fn %{rtpmap: rtpmap} ->
+      Map.new(state.tracks, fn %{rtpmap: rtpmap} ->
         {rtpmap.payload_type, {String.to_atom(rtpmap.encoding), rtpmap.clock_rate}}
       end)
-      |> Enum.into(%{})
 
     case state.transport do
       :tcp ->
