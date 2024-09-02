@@ -46,9 +46,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   @spec play(State.t()) :: State.t()
-  def play(%State{transport: {:udp, _, _}} = state) do
-    Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
-
+  def play(state) do
     case RTSP.play(state.rtsp_session) do
       {:ok, %{status: 200}} ->
         %{state | keep_alive_timer: start_keep_alive_timer(state)}
@@ -58,24 +56,11 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
-  def play(%State{transport: :tcp} = state) do
-    Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
-
-    RTSP.play_no_response(state.rtsp_session)
-    %{state | keep_alive_timer: start_keep_alive_timer(state)}
-  end
-
   @spec keep_alive(State.t()) :: State.t()
   def keep_alive(state) do
     Membrane.Logger.debug("Send GET_PARAMETER to keep session alive")
 
-    case state.transport do
-      :tcp ->
-        RTSP.get_parameter_no_response(state.rtsp_session)
-
-      {:udp, _port_range_start, _port_range_end} ->
-        {:ok, %{status: 200}} = RTSP.get_parameter(state.rtsp_session)
-    end
+    {:ok, %{status: 200}} = RTSP.get_parameter(state.rtsp_session)
 
     %{state | keep_alive_timer: start_keep_alive_timer(state)}
   end
@@ -95,16 +80,13 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   @spec get_rtsp_description(State.t()) :: connection_establishment_phase_return()
-  defp get_rtsp_description(%{rtsp_session: rtsp_session} = state, retry \\ true) do
+  defp get_rtsp_description(%{rtsp_session: rtsp_session} = state) do
     Membrane.Logger.debug("ConnectionManager: Getting RTSP description")
 
     case RTSP.describe(rtsp_session, @content_type_header) do
       {:ok, %{status: 200} = response} ->
         tracks = get_tracks(response, state.allowed_media_types)
         {:ok, %{state | tracks: tracks}}
-
-      {:ok, %{status: 401}} ->
-        if retry, do: get_rtsp_description(state, false), else: {:error, :unauthorized, state}
 
       _result ->
         {:error, :getting_rtsp_description_failed, state}

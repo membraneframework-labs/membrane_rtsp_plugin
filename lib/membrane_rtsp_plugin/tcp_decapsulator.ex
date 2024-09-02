@@ -5,7 +5,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   RFC 7826 Section 14.
 
   Encapsulated RTP packets interleaved in the stream will have the following structure:
-  ["$" = 36 :: 1 byte][Channel id :: 1 byte][Length :: 2 bytes][packet :: <Length> bytes]
+  ("$" = 36 :: 1 byte)(Channel id :: 1 byte)(Length :: 2 bytes)(packet :: <Length> bytes)
 
   RTSP Messages are not encapsulated this way, but can only be present between RTP packets.
   """
@@ -14,12 +14,10 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   alias Membrane.{Buffer, RemoteStream, RTP, RTSP}
 
   def_options rtsp_session: [
-                spec: pid() | nil,
-                default: nil,
+                spec: pid(),
                 description: """
                 PID of a RTSP Session (returned from Membrane.RTSP.start or Membrane.RTSP.start_link)
-                that received RTSP responses will be forwarded to. If nil the responses will be
-                discarded.
+                that received RTSP responses will be forwarded to.
                 """
               ]
 
@@ -94,7 +92,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
        ) do
     case RTSP.Response.verify_content_length(rtsp_message_start) do
       {:ok, _expected_length, _actual_length} ->
-        handle_rtsp_response(rtsp_session, rtsp_message_start)
+        RTSP.handle_response(rtsp_session, rtsp_message_start)
 
         {<<>>, complete_packets_binaries}
 
@@ -105,30 +103,12 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
         <<rtsp_message::binary-size(rtsp_message_length)-unit(8), rest::binary>> =
           rtsp_message_start
 
-        handle_rtsp_response(rtsp_session, rtsp_message)
+        RTSP.handle_response(rtsp_session, rtsp_message)
 
         get_complete_packets(rest, rtsp_session, complete_packets_binaries)
 
       {:error, expected_length, actual_length} when actual_length <= expected_length ->
         {rtsp_message_start, Enum.reverse(complete_packets_binaries)}
-    end
-  end
-
-  @spec handle_rtsp_response(RTSP.t() | nil, binary()) :: :ok | {:error, reason :: atom()}
-  defp handle_rtsp_response(nil, _response) do
-    :ok
-  end
-
-  defp handle_rtsp_response(session, response) do
-    case RTSP.handle_response(session, response) do
-      {:ok, %RTSP.Response{status: 200}} ->
-        :ok
-
-      {:ok, %RTSP.Response{status: 401}} ->
-        RTSP.get_parameter_no_response(session)
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 end
