@@ -86,6 +86,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
            response_timeout: Membrane.Time.as_milliseconds(state.timeout, :round)
          ) do
       {:ok, session} ->
+        Process.flag(:trap_exit, true)
         {:ok, %{state | rtsp_session: session}}
 
       {:error, reason} ->

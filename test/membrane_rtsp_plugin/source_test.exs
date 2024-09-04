@@ -26,12 +26,14 @@ defmodule Membrane.RTSP.SourceTest do
           allowed_media_types: opts[:allowed_media_types] || [:video, :audio, :application],
           stream_uri: "rtsp://localhost:#{opts[:port]}/",
           timeout: opts[:timeout] || Membrane.Time.seconds(15),
-          keep_alive_interval: opts[:keep_alive_interval] || Membrane.Time.seconds(15)
+          keep_alive_interval: opts[:keep_alive_interval] || Membrane.Time.seconds(15),
+          on_connection_closed: :send_eos
         })
 
       {[spec: spec], %{dest_folder: opts[:dest_folder]}}
     end
 
+    @impl true
     def handle_child_notification({:new_track, ssrc, track}, _element, _ctx, state) do
       file_name =
         case track.rtpmap.encoding do
@@ -83,6 +85,14 @@ defmodule Membrane.RTSP.SourceTest do
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
 
+    assert_pipeline_notified(pid, :source, {:set_up_tracks, tracks})
+
+    assert [
+             %{type: :video, rtpmap: %{encoding: "H264"}},
+             %{type: :video, rtpmap: %{encoding: "H265"}},
+             %{type: :application, rtpmap: %{encoding: "plain"}}
+           ] = Enum.sort_by(tracks, fn %{rtpmap: %{encoding: encoding}} -> encoding end)
+
     assert_pipeline_notified(
       pid,
       :source,
@@ -124,10 +134,20 @@ defmodule Membrane.RTSP.SourceTest do
   test "stream specific media using tcp", %{server_port: port, tmp_dir: tmp_dir} do
     options = [
       module: TestPipeline,
-      custom_args: %{port: port, dest_folder: tmp_dir, allowed_media_types: [:application]}
+      custom_args: %{
+        port: port,
+        dest_folder: tmp_dir,
+        allowed_media_types: [:application]
+      }
     ]
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
+
+    assert_pipeline_notified(
+      pid,
+      :source,
+      {:set_up_tracks, [%{type: :application, rtpmap: %{encoding: "plain"}}]}
+    )
 
     assert_pipeline_notified(
       pid,
@@ -164,6 +184,14 @@ defmodule Membrane.RTSP.SourceTest do
 
     pid = Membrane.Testing.Pipeline.start_link_supervised!(options)
 
+    assert_pipeline_notified(pid, :source, {:set_up_tracks, tracks})
+
+    assert [
+             %{type: :video, rtpmap: %{encoding: "H264"}},
+             %{type: :video, rtpmap: %{encoding: "H265"}},
+             %{type: :application, rtpmap: %{encoding: "plain"}}
+           ] = Enum.sort_by(tracks, fn %{rtpmap: %{encoding: encoding}} -> encoding end)
+
     assert_pipeline_notified(
       pid,
       :source,
@@ -182,7 +210,10 @@ defmodule Membrane.RTSP.SourceTest do
       {:new_track, _ssrc, %{type: :application, rtpmap: %{encoding: "plain"}}}
     )
 
-    Process.sleep(500)
+    assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
+    assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
+    assert_end_of_stream(pid, {:sink, _ref}, :input, 5_000)
+
     :ok = Membrane.Testing.Pipeline.terminate(pid)
 
     :gen_udp.close(blocking_socket1)
