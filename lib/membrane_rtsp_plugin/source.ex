@@ -273,9 +273,15 @@ defmodule Membrane.RTSP.Source do
   end
 
   @spec get_rtp_depayloader(ConnectionManager.track()) :: module() | nil
-  defp get_rtp_depayloader(%{rtpmap: %{encoding: "H264"}}), do: Membrane.RTP.H264.Depayloader
-  defp get_rtp_depayloader(%{rtpmap: %{encoding: "H265"}}), do: Membrane.RTP.H265.Depayloader
-  defp get_rtp_depayloader(_track), do: nil
+  defp get_rtp_depayloader(%{rtpmap: %{encoding: encoding}}) do
+    case encoding do
+      "H264" -> Membrane.RTP.H264.Depayloader
+      "H265" -> Membrane.RTP.H265.Depayloader
+      "MP4A-LATM" -> Membrane.RTP.AAC.Depayloader
+      "opus" -> Membrane.RTP.Opus.Depayloader
+      _other_encoding -> nil
+    end
+  end
 
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp parser(link_builder, %{rtpmap: %{encoding: "H264"}} = track) do
