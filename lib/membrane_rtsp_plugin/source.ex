@@ -277,7 +277,7 @@ defmodule Membrane.RTSP.Source do
     case encoding do
       "H264" -> Membrane.RTP.H264.Depayloader
       "H265" -> Membrane.RTP.H265.Depayloader
-      "MP4A-LATM" -> Membrane.RTP.AAC.Depayloader
+      "MP4A-LATM" -> %Membrane.RTP.AAC.Depayloader{mode: :hbr}
       "opus" -> Membrane.RTP.Opus.Depayloader
       _other_encoding -> nil
     end
