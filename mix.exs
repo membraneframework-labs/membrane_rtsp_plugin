@@ -37,7 +37,7 @@ defmodule Membrane.RTSP.Plugin.Mixfile do
   defp deps do
     [
       {:membrane_core, "~> 1.1"},
-      {:membrane_rtsp, github: "membraneframework/membrane_rtsp", branch: "change-receiving"},
+      {:membrane_rtsp, "~> 0.10.0"},
       {:membrane_rtp_plugin, "~> 0.29.0"},
       {:membrane_rtp_h264_plugin, "~> 0.19.0"},
       {:membrane_rtp_h265_plugin, "~> 0.5.1"},
