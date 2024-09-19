@@ -11,6 +11,7 @@ defmodule Membrane.RTSP.Source do
   The following codecs are depayloaded and parsed:
     * `H264`
     * `H265`
+    * `AAC` (if sent according to RFC3640)
 
   When the element finishes setting up all tracks it will send a `t:set_up_tracks/0` notification.
   Each time a track is parsed and available for further processing the element will send a
@@ -273,15 +274,21 @@ defmodule Membrane.RTSP.Source do
   end
 
   @spec get_rtp_depayloader(ConnectionManager.track()) :: module() | nil
-  defp get_rtp_depayloader(%{rtpmap: %{encoding: encoding}}) do
-    case encoding do
-      "H264" -> Membrane.RTP.H264.Depayloader
-      "H265" -> Membrane.RTP.H265.Depayloader
-      "MP4A-LATM" -> %Membrane.RTP.AAC.Depayloader{mode: :hbr}
-      "opus" -> Membrane.RTP.Opus.Depayloader
-      _other_encoding -> nil
-    end
+  defp get_rtp_depayloader(%{rtpmap: %{encoding: "H264"}}), do: Membrane.RTP.H264.Depayloader
+  defp get_rtp_depayloader(%{rtpmap: %{encoding: "H265"}}), do: Membrane.RTP.H265.Depayloader
+  defp get_rtp_depayloader(%{rtpmap: %{encoding: "opus"}}), do: Membrane.RTP.Opus.Depayloader
+
+  defp get_rtp_depayloader(%{type: :audio, rtpmap: %{encoding: "mpeg-generic"}} = track) do
+    mode =
+      case track.fmtp do
+        %{mode: :AAC_hbr} -> :hbr
+        %{mode: :AAC_lbr} -> :lbr
+      end
+
+    %Membrane.RTP.AAC.Depayloader{mode: mode}
   end
+
+  defp get_rtp_depayloader(%{rtpmap: %{encoding: _other}}), do: nil
 
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp parser(link_builder, %{rtpmap: %{encoding: "H264"}} = track) do
@@ -301,6 +308,12 @@ defmodule Membrane.RTSP.Source do
       spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
       ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
       repeat_parameter_sets: true
+    })
+  end
+
+  defp parser(link_builder, %{type: :audio, rtpmap: %{encoding: "mpeg-generic"}} = track) do
+    child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
+      audio_specific_config: track.fmtp.config
     })
   end
 
