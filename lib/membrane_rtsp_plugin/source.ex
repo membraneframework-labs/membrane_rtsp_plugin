@@ -278,7 +278,7 @@ defmodule Membrane.RTSP.Source do
   defp get_rtp_depayloader(%{rtpmap: %{encoding: "H265"}}), do: Membrane.RTP.H265.Depayloader
   defp get_rtp_depayloader(%{rtpmap: %{encoding: "opus"}}), do: Membrane.RTP.Opus.Depayloader
 
-  defp get_rtp_depayloader(%{type: :audio, rtpmap: %{encoding: "mpeg-generic"}} = track) do
+  defp get_rtp_depayloader(%{type: :audio, rtpmap: %{encoding: "mpeg4-generic"}} = track) do
     mode =
       case track.fmtp do
         %{mode: :AAC_hbr} -> :hbr
@@ -311,7 +311,7 @@ defmodule Membrane.RTSP.Source do
     })
   end
 
-  defp parser(link_builder, %{type: :audio, rtpmap: %{encoding: "mpeg-generic"}} = track) do
+  defp parser(link_builder, %{type: :audio, rtpmap: %{encoding: "mpeg4-generic"}} = track) do
     child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
       audio_specific_config: track.fmtp.config
     })
