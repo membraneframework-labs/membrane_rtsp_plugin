@@ -39,7 +39,7 @@ defmodule Membrane.RTSP.DecapsulatorTest do
           child(:source, %Source{
             output: tcp_segments
           })
-          |> child(:decapsulator, Decapsulator)
+          |> child(:decapsulator, %Decapsulator{rtsp_session: self()})
           |> child(:sink, Sink)
       )
 

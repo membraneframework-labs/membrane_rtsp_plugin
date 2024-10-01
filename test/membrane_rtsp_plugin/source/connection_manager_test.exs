@@ -49,6 +49,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
 
     expect(RTSP.setup(^pid, _control, _headers), [num_calls: 3], do: {:ok, Response.new(200)})
     expect(RTSP.get_socket(^pid), do: :socket)
+    expect(RTSP.play(^pid), do: {:ok, Response.new(200)})
 
     assert state = ConnectionManager.establish_connection(state)
 
@@ -65,7 +66,6 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
     expect(RTSP.start_link(@stream_uri, _options), do: {:error, :econnrefused})
     expect(RTSP.start_link(@stream_uri, _options), do: {:ok, pid})
 
-    expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(401)})
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(404)})
 
     assert_raise RuntimeError,
