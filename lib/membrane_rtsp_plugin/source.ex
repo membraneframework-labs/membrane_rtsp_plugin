@@ -230,7 +230,7 @@ defmodule Membrane.RTSP.Source do
   end
 
   @spec get_set_up_tracks_notification(State.t()) :: set_up_tracks_notification()
-  def get_set_up_tracks_notification(state) do
+  defp get_set_up_tracks_notification(state) do
     {:set_up_tracks, Enum.map(state.tracks, &Map.delete(&1, :transport))}
   end
 
