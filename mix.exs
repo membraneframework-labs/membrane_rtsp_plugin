@@ -47,7 +47,7 @@ defmodule Membrane.RTSP.Plugin.Mixfile do
       {:membrane_h26x_plugin, "~> 0.10.0"},
       {:membrane_udp_plugin, "~> 0.14.0"},
       {:membrane_aac_plugin, "~> 0.19.0"},
-      {:ex_sdp, github: "membraneframework/ex_sdp", branch: "aac-fmtp", override: true},
+      {:ex_sdp, "~> 1.1"},
       {:ex_doc, ">= 0.0.0", only: :dev, runtime: false},
       {:dialyxir, ">= 0.0.0", only: :dev, runtime: false},
       {:credo, ">= 0.0.0", only: :dev, runtime: false},
