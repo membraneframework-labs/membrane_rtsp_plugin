@@ -130,8 +130,8 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_setup(_ctx, state) do
-    state = ConnectionManager.establish_connection(state)
+  def handle_setup(ctx, state) do
+    state = ConnectionManager.establish_connection(ctx.utility_supervisor, state)
 
     {[spec: create_sources_spec(state), notify_parent: get_set_up_tracks_notification(state)],
      state}
