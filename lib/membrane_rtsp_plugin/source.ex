@@ -179,35 +179,37 @@ defmodule Membrane.RTSP.Source do
 
   @impl true
   def handle_info(
-        {:EXIT, rtsp_session, :socket_closed},
+        {:DOWN, _ref, :process, rtsp_session, reason},
         ctx,
-        %State{rtsp_session: rtsp_session, on_connection_closed: :send_eos} = state
-      ) do
-    notify_udp_sources_actions =
-      ctx.children
-      |> Map.keys()
-      |> Enum.filter(&match?({:udp_source, _ref}, &1))
-      |> Enum.map(&{:notify_child, {&1, :close_socket}})
-
-    {notify_udp_sources_actions, %{state | end_of_stream: true}}
-  end
-
-  @impl true
-  def handle_info(
-        {:EXIT, rtsp_session, reason},
-        _ctx,
         %State{rtsp_session: rtsp_session} = state
       ) do
-    {[terminate: {:rtsp_session_crash, reason}], state}
+    case state.on_connection_closed do
+      :send_eos ->
+        notify_udp_sources_actions =
+          ctx.children
+          |> Map.keys()
+          |> Enum.filter(&match?({:udp_source, _ref}, &1))
+          |> Enum.map(&{:notify_child, {&1, :close_socket}})
+
+        {notify_udp_sources_actions, %{state | end_of_stream: true}}
+
+      :raise_error ->
+        {[terminate: {:rtsp_session_crash, reason}], state}
+    end
   end
 
   @impl true
-  def handle_info(:keep_alive, _ctx, %{end_of_stream: false} = state) do
-    {[], ConnectionManager.keep_alive(state)}
+  def handle_info(:keep_alive, _ctx, state) do
+    if state.end_of_stream do
+      {[], state}
+    else
+      {[], ConnectionManager.keep_alive(state)}
+    end
   end
 
   @impl true
-  def handle_info(_message, _ctx, state) do
+  def handle_info(message, _ctx, state) do
+    Membrane.Logger.warning("Ignoring message: #{inspect(message)}")
     {[], state}
   end
 

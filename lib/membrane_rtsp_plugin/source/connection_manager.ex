@@ -69,11 +69,11 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   @spec start_rtsp_connection(State.t()) :: connection_establishment_phase_return()
   defp start_rtsp_connection(state) do
-    case RTSP.start_link(state.stream_uri,
+    case RTSP.start(state.stream_uri,
            response_timeout: Membrane.Time.as_milliseconds(state.timeout, :round)
          ) do
       {:ok, session} ->
-        Process.flag(:trap_exit, true)
+        Process.monitor(session)
         {:ok, %{state | rtsp_session: session}}
 
       {:error, reason} ->

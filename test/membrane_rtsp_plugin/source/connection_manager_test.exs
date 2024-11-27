@@ -41,7 +41,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
   test "successful connection", %{state: state} do
     pid = :c.pid(0, 1, 1)
 
-    expect(RTSP.start_link(@stream_uri, _options), do: {:ok, pid})
+    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
 
     expect RTSP.describe(^pid, [{"accept", "application/sdp"}]) do
       {:ok, %Response{Response.new(200) | body: ExSDP.parse!(@sdp)}}
@@ -63,8 +63,8 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
   test "failed connection", %{state: state} do
     pid = :c.pid(0, 1, 1)
 
-    expect(RTSP.start_link(@stream_uri, _options), do: {:error, :econnrefused})
-    expect(RTSP.start_link(@stream_uri, _options), do: {:ok, pid})
+    expect(RTSP.start(@stream_uri, _options), do: {:error, :econnrefused})
+    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
 
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(404)})
 
