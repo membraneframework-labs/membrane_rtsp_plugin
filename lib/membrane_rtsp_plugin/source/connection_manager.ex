@@ -31,10 +31,10 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     RTSP.transfer_socket_control(rtsp_session, new_controller)
   end
 
-  @spec establish_connection(State.t()) :: State.t()
-  def establish_connection(state) do
+  @spec establish_connection(Membrane.UtilitySupervisor.t(), State.t()) :: State.t()
+  def establish_connection(utility_supervisor, state) do
     state =
-      with {:ok, state} <- start_rtsp_connection(state),
+      with {:ok, state} <- start_rtsp_connection(utility_supervisor, state),
            {:ok, state} <- get_rtsp_description(state),
            {:ok, state} <- setup_rtsp_connection(state) do
         state
@@ -67,13 +67,22 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     %{state | keep_alive_timer: start_keep_alive_timer(state)}
   end
 
-  @spec start_rtsp_connection(State.t()) :: connection_establishment_phase_return()
-  defp start_rtsp_connection(state) do
-    case RTSP.start_link(state.stream_uri,
-           response_timeout: Membrane.Time.as_milliseconds(state.timeout, :round)
-         ) do
+  @spec start_rtsp_connection(Membrane.UtilitySupervisor.t(), State.t()) ::
+          connection_establishment_phase_return()
+  defp start_rtsp_connection(utility_supervisor, state) do
+    rtsp_session_child_spec = %{
+      id: RTSP,
+      start:
+        {RTSP, :start_link,
+         [
+           state.stream_uri,
+           [response_timeout: Membrane.Time.as_milliseconds(state.timeout, :round)]
+         ]}
+    }
+
+    case Membrane.UtilitySupervisor.start_child(utility_supervisor, rtsp_session_child_spec) do
       {:ok, session} ->
-        Process.flag(:trap_exit, true)
+        Process.monitor(session)
         {:ok, %{state | rtsp_session: session}}
 
       {:error, reason} ->

@@ -40,8 +40,14 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
 
   test "successful connection", %{state: state} do
     pid = :c.pid(0, 1, 1)
+    {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_one)
 
-    expect(RTSP.start_link(@stream_uri, _options), do: {:ok, pid})
+    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
+
+    expect(
+      Membrane.UtilitySupervisor.start_child(_sup, %{start: {RTSP, :start_link, [uri, options]}}),
+      do: RTSP.start(uri, options)
+    )
 
     expect RTSP.describe(^pid, [{"accept", "application/sdp"}]) do
       {:ok, %Response{Response.new(200) | body: ExSDP.parse!(@sdp)}}
@@ -51,7 +57,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
     expect(RTSP.get_socket(^pid), do: :socket)
     expect(RTSP.play(^pid), do: {:ok, Response.new(200)})
 
-    assert state = ConnectionManager.establish_connection(state)
+    assert state = ConnectionManager.establish_connection(supervisor, state)
 
     assert state = ConnectionManager.play(state)
     assert state.rtsp_session == pid
@@ -62,18 +68,25 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
 
   test "failed connection", %{state: state} do
     pid = :c.pid(0, 1, 1)
+    {:ok, supervisor} = Supervisor.start_link([], strategy: :one_for_one)
 
-    expect(RTSP.start_link(@stream_uri, _options), do: {:error, :econnrefused})
-    expect(RTSP.start_link(@stream_uri, _options), do: {:ok, pid})
+    expect(
+      Membrane.UtilitySupervisor.start_child(_sup, %{start: {RTSP, :start_link, [uri, options]}}),
+      [num_calls: 2],
+      do: RTSP.start(uri, options)
+    )
+
+    expect(RTSP.start(@stream_uri, _options), do: {:error, :econnrefused})
+    expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
 
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(404)})
 
     assert_raise RuntimeError,
                  "RTSP connection failed, reason: :econnrefused",
-                 fn -> ConnectionManager.establish_connection(state) end
+                 fn -> ConnectionManager.establish_connection(supervisor, state) end
 
     assert_raise RuntimeError,
                  "RTSP connection failed, reason: :getting_rtsp_description_failed",
-                 fn -> ConnectionManager.establish_connection(state) end
+                 fn -> ConnectionManager.establish_connection(supervisor, state) end
   end
 end
