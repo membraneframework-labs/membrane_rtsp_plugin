@@ -2,7 +2,7 @@ defmodule Membrane.RTSP.Source do
   @moduledoc """
   Source bin responsible for connecting to an RTSP server.
 
-  This element connects to an RTSP server, depayload and parses the received media if possible.
+  This element connects to an RTSP server, depayloads and parses the received media if possible.
   If there's no suitable depayloader and parser, the raw payload is sent to the subsequent elements in
   the pipeline.
 
@@ -15,9 +15,8 @@ defmodule Membrane.RTSP.Source do
     * `Opus`
 
   When the element finishes setting up all tracks it will send a `t:set_up_tracks/0` notification.
-  Each time a track is parsed and available for further processing the element will send a
-  `t:new_track/0` notification. An output pad `Pad.ref(:output, ssrc)` should be linked to receive
-  the data.
+  To receive a track a corresponding `Pad.ref(:output, control_path)` pad has to be connected,
+  where each track's control path is provided in the `t:set_up_tracks/0` notification.
   """
 
   use Membrane.Bin
