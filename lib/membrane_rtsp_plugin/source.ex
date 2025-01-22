@@ -99,7 +99,6 @@ defmodule Membrane.RTSP.Source do
             timeout: Time.t(),
             keep_alive_interval: Time.t(),
             tracks: [ConnectionManager.track()],
-            ssrc_to_track: %{non_neg_integer() => ConnectionManager.track()},
             rtsp_session: Membrane.RTSP.t() | nil,
             keep_alive_timer: reference() | nil,
             on_connection_closed: :raise_error | :send_eos,
@@ -152,40 +151,14 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_child_notification(
-        {:new_rtp_stream, ssrc, pt, _extensions},
-        rtp_demuxer_name,
-        _ctx,
-        state
-      ) do
-    raise "jajco"
-
-    matching_function =
-      case rtp_demuxer_name do
-        {:rtp_demuxer, control_path} -> fn track -> track.control_path == control_path end
-        :rtp_demuxer -> fn track -> track.rtpmap.payload_type == pt end
-      end
-
-    case Enum.find(state.tracks, matching_function) do
-      nil ->
-        raise "No track of payload type #{inspect(pt)} has been requested with SETUP"
-
-      track ->
-        ssrc_to_track = Map.put(state.ssrc_to_track, ssrc, track)
-
-        {[notify_parent: {:new_track, ssrc, Map.delete(track, :transport)}],
-         %{state | ssrc_to_track: ssrc_to_track}}
-    end
-  end
-
-  @impl true
   def handle_child_notification({:request_socket_control, _socket, pid}, :tcp_source, _ctx, state) do
     RTSP.transfer_socket_control(state.rtsp_session, pid)
     {[], state}
   end
 
   @impl true
-  def handle_child_notification(_notification, _element, _ctx, state) do
+  def handle_child_notification(notification, _element, _ctx, state) do
+    Membrane.Logger.warning("Ignoring child notification: #{inspect(notification)}")
     {[], state}
   end
 
@@ -226,8 +199,8 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
-  def handle_pad_added(Pad.ref(:output, ssrc) = pad, _ctx, state) do
-    track = Map.fetch!(state.ssrc_to_track, ssrc)
+  def handle_pad_added(Pad.ref(:output, control_path) = pad, _ctx, state) do
+    track = Enum.find(state.tracks, &(&1.control_path == control_path))
 
     demuxer_name =
       case state.transport do
@@ -237,7 +210,7 @@ defmodule Membrane.RTSP.Source do
 
     spec =
       get_child(demuxer_name)
-      |> via_out(Pad.ref(:output, ssrc))
+      |> via_out(:output, options: [stream_id: {:payload_type, track.rtpmap.payload_type}])
       |> depayloader(track)
       |> parser(track)
       |> bin_output(pad)
@@ -257,11 +230,6 @@ defmodule Membrane.RTSP.Source do
 
   @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
   defp create_sources_spec(state) do
-    fmt_mapping =
-      Map.new(state.tracks, fn %{rtpmap: rtpmap} ->
-        {rtpmap.payload_type, {String.to_atom(rtpmap.encoding), rtpmap.clock_rate}}
-      end)
-
     case state.transport do
       :tcp ->
         {:tcp, socket} = List.first(state.tracks).transport
@@ -276,17 +244,16 @@ defmodule Membrane.RTSP.Source do
 
       {:udp, _port_range_start, _port_range_end} ->
         [
-          child(:rtp_session, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})
-          | Enum.flat_map(state.tracks, fn track ->
-              {:udp, rtp_port, rtcp_port} = track.transport
+          Enum.flat_map(state.tracks, fn track ->
+            {:udp, rtp_port, rtcp_port} = track.transport
 
-              [
-                child({:udp_source, rtp_port}, %Membrane.UDP.Source{local_port_no: rtp_port})
-                |> child({:rtp_demuxer, track.control_path}, Membrane.RTP.Demuxer),
-                child({:udp_source, rtcp_port}, %Membrane.UDP.Source{local_port_no: rtcp_port})
-                |> child({:rtcp_demuxer, track.control_path}, Membrane.RTP.Demuxer)
-              ]
-            end)
+            [
+              child({:udp_source, rtp_port}, %Membrane.UDP.Source{local_port_no: rtp_port})
+              |> child({:rtp_demuxer, track.control_path}, Membrane.RTP.Demuxer),
+              child({:udp_source, rtcp_port}, %Membrane.UDP.Source{local_port_no: rtcp_port})
+              |> child({:rtcp_demuxer, track.control_path}, Membrane.RTP.Demuxer)
+            ]
+          end)
         ]
     end
   end
