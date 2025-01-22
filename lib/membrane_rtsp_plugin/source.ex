@@ -28,7 +28,6 @@ defmodule Membrane.RTSP.Source do
   alias Membrane.{RTSP, Time}
 
   @type set_up_tracks_notification :: {:set_up_tracks, [track()]}
-  @type new_track_notification :: {:new_track, ssrc :: pos_integer(), track :: track()}
   @type track :: %{
           control_path: String.t(),
           type: :video | :audio | :application,
