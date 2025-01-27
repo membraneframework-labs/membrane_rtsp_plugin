@@ -209,6 +209,9 @@ defmodule Membrane.RTSP.Source do
     spec =
       get_child(demuxer_name)
       |> via_out(:output, options: [stream_id: {:payload_type, track.rtpmap.payload_type}])
+      |> child({:jitter_buffer, make_ref()}, %Membrane.RTP.JitterBuffer{
+        clock_rate: track.rtpmap.clock_rate
+      })
       |> depayloader(track)
       |> parser(track)
       |> bin_output(pad)
