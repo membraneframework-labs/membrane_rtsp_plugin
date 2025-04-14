@@ -13,11 +13,11 @@ defmodule Membrane.RTSP.RequestHandler do
   s=MyVideoSession
   t=0 0
   m=video 0 RTP/AVP 96
-  a=rtpmap:96 H264/90000
-  a=fmtp:96 profile-level-id=42e01f;packetization-mode=1
+  a=rtpmap:97 H264/90000
+  a=fmtp:97 profile-level-id=42e01f;packetization-mode=1
   a=control:/in.h264
   m=video 0 RTP/AVP 97
-  a=rtpmap:97 H265/90000
+  a=rtpmap:96 H265/90000
   a=control:/in.hevc
   m=application 0 RTP/AVP 107
   a=control:/in.txt
@@ -31,13 +31,13 @@ defmodule Membrane.RTSP.RequestHandler do
       H264: %{
         encoding: :H264,
         location: "test/fixtures/in.h264",
-        payload_type: 96,
+        payload_type: 97,
         clock_rate: 90_000
       },
       H265: %{
         encoding: :H265,
         location: "test/fixtures/in.hevc",
-        payload_type: 97,
+        payload_type: 96,
         clock_rate: 90_000
       },
       plain: %{

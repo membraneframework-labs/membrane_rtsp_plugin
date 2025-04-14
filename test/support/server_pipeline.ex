@@ -100,8 +100,10 @@ defmodule Membrane.RTSP.ServerPipeline do
 
   @impl true
   def handle_init(_ctx, %{sources: sources, socket: socket}) do
+    fmt_mapping = %{97 => {:H264, 90_000}, 96 => {:H265, 90_000}}
+
     spec =
-      [child(:session_bin, Membrane.RTP.SessionBin)] ++
+      [child(:session_bin, %Membrane.RTP.SessionBin{fmt_mapping: fmt_mapping})] ++
         Enum.flat_map(sources, fn source ->
           [
             child({:source, make_ref()}, %Membrane.File.Source{location: source[:location]})
