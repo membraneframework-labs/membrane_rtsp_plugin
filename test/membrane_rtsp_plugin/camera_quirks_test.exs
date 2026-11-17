@@ -418,4 +418,56 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       end
     end
   end
+
+  describe "H264 parameter sets in the description" do
+    # gortsplib "video h264 annexb" (gortsplib#402): the sets are base64 of the NAL
+    # units with their Annex B start code. The comment on a camera model that appends
+    # a start code was already in the source for H265.
+    for {description, wrap} <- [
+          {"that start with a start code", quote(do: fn set -> <<0, 0, 0, 1>> <> set end)},
+          {"that end with a start code", quote(do: fn set -> set <> <<0, 0, 0, 1>> end)}
+        ] do
+      test "#{description} are used without it" do
+        [sps, pps | _rest] =
+          :binary.split(@h264, <<0, 0, 0, 1>>, [:global]) |> Enum.reject(&(&1 == ""))
+
+        wrap = unquote(wrap)
+        sprop = Enum.map_join([sps, pps], ",", &Base.encode64(wrap.(&1)))
+
+        sdp = """
+        v=0
+        o=- 0 0 IN IP4 127.0.0.1
+        s=Stream
+        t=0 0
+        m=video 0 RTP/AVP 96
+        a=rtpmap:96 H264/90000
+        a=fmtp:96 packetization-mode=1;sprop-parameter-sets=#{sprop}
+        a=control:trackID=0
+        """
+
+        # the stream itself carries no parameter sets, they are only in the description
+        media =
+          @h264
+          |> MockCamera.h264_rtp_packets(payload_type: 96)
+          |> Enum.reject(fn <<_rtp_header::binary-size(12), _nal_header::3, type::5,
+                              _rest::binary>> ->
+            type in [7, 8]
+          end)
+          |> Enum.map(&MockCamera.interleaved(0, &1))
+
+        {camera, port} = start_camera(MockCamera.script(sdp, media))
+        pipeline = CameraPipeline.start_supervised!(port)
+
+        assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H264{width: width})
+        assert is_integer(width)
+        assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{payload: payload})
+        # the parser puts the sets from the description in front of the first keyframe
+        assert payload =~ sps
+        refute payload =~ <<0, 0, 0, 1, 0, 0, 0, 1>>
+
+        MockCamera.close_connection(camera)
+        assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+      end
+    end
+  end
 end

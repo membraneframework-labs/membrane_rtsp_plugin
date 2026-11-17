@@ -369,17 +369,17 @@ defmodule Membrane.RTSP.Source do
     pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
 
     child(link_builder, {:parser, make_ref()}, %Membrane.H264.Parser{
-      spss: List.wrap(sps),
-      ppss: List.wrap(pps),
+      spss: parameter_sets(sps),
+      ppss: parameter_sets(pps),
       repeat_parameter_sets: true
     })
   end
 
   defp parser(link_builder, track, "h265") do
     child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
-      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps) |> Enum.map(&clean_parameter_set/1),
-      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
-      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
+      vpss: parameter_sets(track.fmtp && track.fmtp.sprop_vps),
+      spss: parameter_sets(track.fmtp && track.fmtp.sprop_sps),
+      ppss: parameter_sets(track.fmtp && track.fmtp.sprop_pps),
       repeat_parameter_sets: true
     })
   end
@@ -397,13 +397,49 @@ defmodule Membrane.RTSP.Source do
 
   defp parser(link_builder, _track, _encoding), do: link_builder
 
-  # a strange issue with one of Milesight camera where the parameter sets has
-  # <<0, 0, 0, 1>> at the end
+  # Parameter sets as the description gives them, ready for the parser.
+  #
+  # Some servers encode the NAL units together with an Annex B start code, either in
+  # front (seen by gortsplib) or behind (a Milesight camera, already handled here for
+  # H265). The parser wants the bare NAL units and crashes on the empty one that a
+  # stray start code leaves behind, so the start codes are removed and a set with
+  # nothing left is dropped.
+  @spec parameter_sets(binary() | [binary()] | nil) :: [binary()]
+  defp parameter_sets(sets) do
+    sets
+    |> List.wrap()
+    |> Enum.map(&clean_parameter_set/1)
+    |> Enum.reject(&(&1 == <<>>))
+  end
+
   @spec clean_parameter_set(binary()) :: binary()
   defp clean_parameter_set(ps) do
-    case :binary.part(ps, byte_size(ps), -4) do
-      <<0, 0, 0, 1>> -> :binary.part(ps, 0, byte_size(ps) - 4)
-      _other -> ps
+    case strip_start_codes(ps) do
+      ^ps ->
+        ps
+
+      cleaned ->
+        Membrane.Logger.warning(
+          "Removed an Annex B start code from a parameter set given in the session description"
+        )
+
+        cleaned
+    end
+  end
+
+  defp strip_start_codes(<<0, 0, 0, 1, rest::binary>>), do: strip_start_codes(rest)
+  defp strip_start_codes(<<0, 0, 1, rest::binary>>), do: strip_start_codes(rest)
+
+  defp strip_start_codes(ps) do
+    cond do
+      String.ends_with?(ps, <<0, 0, 0, 1>>) ->
+        strip_start_codes(binary_part(ps, 0, byte_size(ps) - 4))
+
+      String.ends_with?(ps, <<0, 0, 1>>) ->
+        strip_start_codes(binary_part(ps, 0, byte_size(ps) - 3))
+
+      true ->
+        ps
     end
   end
 end
