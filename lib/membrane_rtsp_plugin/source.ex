@@ -71,7 +71,9 @@ defmodule Membrane.RTSP.Source do
                 default_inspector: &Time.pretty_duration/1,
                 description: """
                 Interval of a heartbeat sent to the RTSP server at a regular interval to
-                keep the session alive.
+                keep the session alive. If the server announces a session timeout that
+                is shorter than twice this interval, the heartbeat is sent every half of
+                that timeout instead.
                 """
               ],
               on_connection_closed: [
@@ -99,6 +101,8 @@ defmodule Membrane.RTSP.Source do
             tracks: [ConnectionManager.track()],
             rtsp_session: Membrane.RTSP.t() | nil,
             keep_alive_timer: reference() | nil,
+            keep_alive_method: :get_parameter | :options,
+            session_timeout: pos_integer() | nil,
             on_connection_closed: :raise_error | :send_eos,
             end_of_stream: boolean(),
             play_request_sent: boolean()
@@ -118,6 +122,8 @@ defmodule Membrane.RTSP.Source do
                   ssrc_to_track: %{},
                   rtsp_session: nil,
                   keep_alive_timer: nil,
+                  keep_alive_method: :get_parameter,
+                  session_timeout: nil,
                   end_of_stream: false,
                   play_request_sent: false
                 ]

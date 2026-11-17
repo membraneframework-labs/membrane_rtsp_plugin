@@ -8,6 +8,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   alias Membrane.RTSP.Source.State
 
   @content_type_header [{"accept", "application/sdp"}]
+  # Method Not Allowed, Not Acceptable, Not Implemented, Option not supported
+  @not_implemented_statuses [405, 406, 501, 551]
 
   @type t() :: pid()
   @type media_types :: [:video | :audio | :application]
@@ -38,6 +40,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   def establish_connection(utility_supervisor, state) do
     state =
       with {:ok, state} <- start_rtsp_connection(utility_supervisor, state),
+           {:ok, state} <- choose_keep_alive_method(state),
            {:ok, state} <- get_rtsp_description(state),
            {:ok, state} <- setup_rtsp_connection(state) do
         state
@@ -62,12 +65,75 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   @spec keep_alive(State.t()) :: State.t()
-  def keep_alive(state) do
-    Membrane.Logger.debug("Send GET_PARAMETER to keep session alive")
+  def keep_alive(%{keep_alive_method: method} = state) do
+    Membrane.Logger.debug("Send #{keep_alive_request(method)} to keep session alive")
 
-    {:ok, %{status: 200}} = RTSP.get_parameter(state.rtsp_session)
+    result =
+      case method do
+        :get_parameter -> RTSP.get_parameter(state.rtsp_session)
+        :options -> RTSP.options(state.rtsp_session)
+      end
 
-    %{state | keep_alive_timer: start_keep_alive_timer(state)}
+    case result do
+      {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
+        %{state | keep_alive_timer: start_keep_alive_timer(state)}
+
+      # The server says that it does not do GET_PARAMETER, whatever it said before.
+      # These are the statuses that GStreamer takes for "not implemented". OPTIONS is
+      # the request that every server has to implement. Any other failure, such as
+      # 454 Session Not Found, still ends the stream below.
+      {:ok, %RTSP.Response{status: status}}
+      when method == :get_parameter and status in @not_implemented_statuses ->
+        Membrane.Logger.warning(
+          "GET_PARAMETER sent to keep the session alive was answered with status " <>
+            "#{status}, using OPTIONS from now on"
+        )
+
+        keep_alive(%{state | keep_alive_method: :options})
+
+      other ->
+        raise "RTSP keep-alive failed: #{describe_failure(keep_alive_request(method), other)}"
+    end
+  end
+
+  defp keep_alive_request(:get_parameter), do: "GET_PARAMETER"
+  defp keep_alive_request(:options), do: "OPTIONS"
+
+  # Asks the server which methods it implements, to know how to keep the session alive.
+  #
+  # GET_PARAMETER is used when the server lists it in the Public header, OPTIONS when
+  # the header is there without it; that is what libavformat, GStreamer and gortsplib
+  # do. A server that refuses OPTIONS or sends no Public header is not failed for it:
+  # it gets GET_PARAMETER, which is what this element has always sent.
+  @spec choose_keep_alive_method(State.t()) :: connection_establishment_phase_return()
+  defp choose_keep_alive_method(state) do
+    with {:ok, %RTSP.Response{status: status} = response} when status in 200..299 <-
+           RTSP.options(state.rtsp_session),
+         {:ok, public} <- RTSP.Response.get_header(response, "Public") do
+      methods = public |> String.split(",") |> Enum.map(&(&1 |> String.trim() |> String.upcase()))
+
+      if "GET_PARAMETER" in methods do
+        {:ok, %{state | keep_alive_method: :get_parameter}}
+      else
+        Membrane.Logger.debug(
+          "The server does not list GET_PARAMETER among its methods (#{public}), " <>
+            "the session will be kept alive with OPTIONS"
+        )
+
+        {:ok, %{state | keep_alive_method: :options}}
+      end
+    else
+      {:error, :no_such_header} ->
+        {:ok, state}
+
+      other ->
+        Membrane.Logger.warning(
+          "#{describe_failure("OPTIONS", other)}, carrying on without knowing the methods " <>
+            "of the server"
+        )
+
+        {:ok, state}
+    end
   end
 
   @spec start_rtsp_connection(Membrane.UtilitySupervisor.t(), State.t()) ::
@@ -126,37 +192,75 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   @spec setup_rtsp_connection(State.t()) :: connection_establishment_phase_return()
   defp setup_rtsp_connection(%{transport: :tcp} = state) do
     case setup_rtsp_connection_with_tcp(state.rtsp_session, state.tracks) do
-      {:ok, tracks} -> {:ok, %{state | tracks: tracks}}
+      {:ok, tracks, responses} -> {:ok, tracks_set_up(state, tracks, responses)}
       {:error, reason} -> {:error, reason, state}
     end
   end
 
   defp setup_rtsp_connection(%{transport: {:udp, min_port, max_port}} = state) do
     case setup_rtsp_connection_with_udp(state.rtsp_session, min_port, max_port, state.tracks) do
-      {:ok, tracks} -> {:ok, %{state | tracks: tracks}}
+      {:ok, tracks, responses} -> {:ok, tracks_set_up(state, tracks, responses)}
       {:error, reason} -> {:error, reason, state}
     end
   end
 
+  @spec tracks_set_up(State.t(), [track()], [RTSP.Response.t()]) :: State.t()
+  defp tracks_set_up(state, tracks, responses) do
+    Enum.reduce(responses, %{state | tracks: tracks}, &store_session_timeout(&2, &1))
+  end
+
   @spec start_keep_alive_timer(State.t()) :: reference()
-  defp start_keep_alive_timer(%{keep_alive_interval: interval}) do
-    Process.send_after(self(), :keep_alive, interval |> Membrane.Time.as_milliseconds(:round))
+  defp start_keep_alive_timer(state) do
+    interval = state |> keep_alive_interval() |> Membrane.Time.as_milliseconds(:round)
+    Process.send_after(self(), :keep_alive, interval)
+  end
+
+  # The server may close a session that it has not heard from for the timeout it
+  # announced (RFC 2326, section 12.37), so the configured interval is shortened to
+  # half of that timeout when it would be too long. Half is what libavformat uses.
+  @spec keep_alive_interval(State.t()) :: Membrane.Time.t()
+  defp keep_alive_interval(%{session_timeout: nil, keep_alive_interval: interval}), do: interval
+
+  defp keep_alive_interval(%{session_timeout: timeout, keep_alive_interval: interval}),
+    do: min(interval, div(Membrane.Time.seconds(timeout), 2))
+
+  # Remembers the session timeout announced in the reply to SETUP.
+  @spec store_session_timeout(State.t(), RTSP.Response.t()) :: State.t()
+  defp store_session_timeout(state, response) do
+    case RTSP.Response.parse_session_header(response) do
+      {:ok, %{timeout: timeout}} when is_integer(timeout) ->
+        state = %{state | session_timeout: timeout}
+
+        if keep_alive_interval(state) < state.keep_alive_interval do
+          Membrane.Logger.debug(
+            "The server closes sessions idle for #{timeout} s, keep-alive requests will " <>
+              "be sent every #{Membrane.Time.pretty_duration(keep_alive_interval(state))}"
+          )
+        end
+
+        state
+
+      _no_timeout ->
+        state
+    end
   end
 
   @spec setup_rtsp_connection_with_tcp(RTSP.t(), [track()]) ::
-          {:ok, tracks :: [track()]} | {:error, reason :: term()}
+          {:ok, tracks :: [track()], responses :: [RTSP.Response.t()]}
+          | {:error, reason :: term()}
   defp setup_rtsp_connection_with_tcp(rtsp_session, tracks) do
     socket = RTSP.get_socket(rtsp_session)
 
     tracks
     |> Enum.with_index()
-    |> Enum.reduce_while({:ok, []}, fn {track, idx}, {:ok, set_up_tracks} ->
+    |> Enum.reduce_while({:ok, [], []}, fn {track, idx}, {:ok, set_up_tracks, responses} ->
       transport_header =
         [{"Transport", "RTP/AVP/TCP;unicast;interleaved=#{idx * 2}-#{idx * 2 + 1}"}]
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
-        {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
-          {:cont, {:ok, [%{track | transport: {:tcp, socket}} | set_up_tracks]}}
+        {:ok, %RTSP.Response{status: status} = response} when status in 200..299 ->
+          track = %{track | transport: {:tcp, socket}}
+          {:cont, {:ok, [track | set_up_tracks], [response | responses]}}
 
         error ->
           Membrane.Logger.debug(
@@ -176,34 +280,52 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
           :inet.port_number(),
           :inet.port_number(),
           [track()],
-          [track()]
-        ) :: {:ok, tracks :: [track()]} | {:error, reason :: term()}
+          [track()],
+          [RTSP.Response.t()]
+        ) ::
+          {:ok, tracks :: [track()], responses :: [RTSP.Response.t()]}
+          | {:error, reason :: term()}
   defp setup_rtsp_connection_with_udp(
          rtsp_session,
          port,
          max_port,
          tracks,
-         set_up_tracks \\ []
+         set_up_tracks \\ [],
+         responses \\ []
        )
 
-  defp setup_rtsp_connection_with_udp(_rtsp_session, _port, _max_port, [], set_up_tracks) do
-    {:ok, Enum.reverse(set_up_tracks)}
+  defp setup_rtsp_connection_with_udp(_session, _port, _max_port, [], set_up_tracks, responses) do
+    {:ok, Enum.reverse(set_up_tracks), responses}
   end
 
-  defp setup_rtsp_connection_with_udp(_rtsp_session, max_port, max_port, _tracks, _set_up_tracks) do
+  defp setup_rtsp_connection_with_udp(_session, max_port, max_port, _tracks, _set_up, _responses) do
     # when current port is equal to max_port the range is already exceeded, because port + 1 is also required.
     {:error, :port_range_exceeded}
   end
 
-  defp setup_rtsp_connection_with_udp(rtsp_session, port, max_port, tracks, set_up_tracks) do
+  defp setup_rtsp_connection_with_udp(
+         rtsp_session,
+         port,
+         max_port,
+         tracks,
+         set_up_tracks,
+         responses
+       ) do
     if port_taken?(port) or port_taken?(port + 1) do
-      setup_rtsp_connection_with_udp(rtsp_session, port + 1, max_port, tracks, set_up_tracks)
+      setup_rtsp_connection_with_udp(
+        rtsp_session,
+        port + 1,
+        max_port,
+        tracks,
+        set_up_tracks,
+        responses
+      )
     else
       transport_header = [{"Transport", "RTP/AVP/UDP;unicast;client_port=#{port}-#{port + 1}"}]
       [track | rest_tracks] = tracks
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
-        {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
+        {:ok, %RTSP.Response{status: status} = response} when status in 200..299 ->
           set_up_tracks = [%{track | transport: {:udp, port, port + 1}} | set_up_tracks]
 
           setup_rtsp_connection_with_udp(
@@ -211,7 +333,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
             port + 2,
             max_port,
             rest_tracks,
-            set_up_tracks
+            set_up_tracks,
+            [response | responses]
           )
 
         other ->

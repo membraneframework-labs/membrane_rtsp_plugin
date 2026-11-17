@@ -575,4 +575,129 @@ defmodule Membrane.RTSP.CameraQuirksTest do
                "none of the media in the session description can be received: text"
     end
   end
+
+  describe "keep-alive" do
+    defp keep_alive_methods(count) do
+      for _n <- 1..count do
+        assert_receive {:mock_camera, :request, method, _request}
+                       when method in ["OPTIONS", "GET_PARAMETER"],
+                       2_000
+
+        method
+      end
+    end
+
+    defp start_playing(script, source_options) do
+      {camera, port} = start_camera(script)
+      pipeline = CameraPipeline.start_supervised!(port, source_options)
+      assert_receive {:mock_camera, :request, "PLAY", _request}, 2_000
+      # the OPTIONS request sent while connecting is not a keep-alive
+      assert_received {:mock_camera, :request, "OPTIONS", _request}
+      {camera, pipeline}
+    end
+
+    @fast [keep_alive_interval: Membrane.Time.milliseconds(50)]
+
+    test "is GET_PARAMETER when the server lists it among its methods" do
+      start_playing(MockCamera.script(@video_sdp), @fast)
+
+      assert keep_alive_methods(2) == ["GET_PARAMETER", "GET_PARAMETER"]
+    end
+
+    # libavformat, GStreamer and gortsplib all read the Public header of the reply to
+    # OPTIONS and keep the session alive with OPTIONS when GET_PARAMETER is not in it
+    test "is OPTIONS when the server does not list GET_PARAMETER among its methods" do
+      options = fn _request ->
+        MockCamera.response("RTSP/1.0 200 OK", ["public: DESCRIBE , SETUP,PLAY, TEARDOWN,options"])
+      end
+
+      {_camera, pipeline} =
+        start_playing(MockCamera.script(@video_sdp, [], %{"OPTIONS" => options}), @fast)
+
+      assert keep_alive_methods(3) == ["OPTIONS", "OPTIONS", "OPTIONS"]
+      assert Process.alive?(pipeline)
+    end
+
+    # GStreamer names a camera that answers "551 Option not supported" for a method it
+    # advertised, and treats 405, 406, 501 and 551 alike
+    test "falls back to OPTIONS when the server refuses the GET_PARAMETER it advertised" do
+      refuse = fn _request -> MockCamera.response("RTSP/1.0 551 Option not supported") end
+      script = MockCamera.script(@video_sdp, [], %{"GET_PARAMETER" => refuse})
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {_camera, pipeline} = start_playing(script, @fast)
+
+          assert keep_alive_methods(4) == ["GET_PARAMETER", "OPTIONS", "OPTIONS", "OPTIONS"]
+          assert Process.alive?(pipeline)
+        end)
+
+      assert log =~ "551"
+    end
+
+    test "that the server refuses for another reason still ends the stream" do
+      gone = fn _request -> MockCamera.response("RTSP/1.0 454 Session Not Found") end
+
+      {_camera, port} =
+        start_camera(MockCamera.script(@video_sdp, [], %{"GET_PARAMETER" => gone}))
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, _supervisor, pipeline} =
+          Membrane.Testing.Pipeline.start(
+            module: CameraPipeline,
+            custom_args: %{port: port, source_options: @fast}
+          )
+
+        monitor = Process.monitor(pipeline)
+
+        assert_receive {:DOWN, ^monitor, :process, ^pipeline,
+                        {:membrane_child_crash, :source,
+                         {%RuntimeError{message: message}, _stack}}},
+                       5_000
+
+        assert message == "RTSP keep-alive failed: GET_PARAMETER was answered with status 454"
+      end)
+
+      refute_received {:mock_camera, :request, "OPTIONS", %{headers: %{"session" => _session}}}
+    end
+
+    # gortsplib tolerates 404 here ("not implemented by every RTSP server"), GStreamer
+    # 405, 406, 501 and 551
+    test "works when the server refuses the OPTIONS request sent while connecting" do
+      refused = fn request ->
+        if request.headers["session"],
+          do: MockCamera.response(),
+          else: MockCamera.response("RTSP/1.0 405 Method Not Allowed")
+      end
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          {_camera, pipeline} =
+            start_playing(MockCamera.script(@video_sdp, [], %{"OPTIONS" => refused}), @fast)
+
+          # nothing is known about the server, so it is asked what it always was
+          assert keep_alive_methods(2) == ["GET_PARAMETER", "GET_PARAMETER"]
+          assert Process.alive?(pipeline)
+        end)
+
+      assert log =~ "405"
+    end
+
+    # RFC 2326 section 12.37: the server may close a session that it has not heard
+    # from for the timeout it announced. libavformat sends a request every half of it.
+    test "is sent within the timeout that the server announces for the session" do
+      setup = fn request ->
+        MockCamera.response("RTSP/1.0 200 OK", [
+          "Session: 12345678 ; timeout=1",
+          "Transport: " <> request.headers["transport"]
+        ])
+      end
+
+      start_playing(MockCamera.script(@video_sdp, [], %{"SETUP" => setup}),
+        keep_alive_interval: Membrane.Time.seconds(15)
+      )
+
+      assert_receive {:mock_camera, :request, "GET_PARAMETER", _request}, 900
+    end
+  end
 end
