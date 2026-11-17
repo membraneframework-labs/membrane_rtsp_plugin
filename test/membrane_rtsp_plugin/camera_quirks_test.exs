@@ -752,4 +752,27 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       |> length()
     end
   end
+
+  describe "User-Agent" do
+    # membrane_core#1205: a camera firmware answers 503 to requests that carry the
+    # default User-Agent and accepts them under another name
+    test "can be set for servers that refuse the default one" do
+      picky = fn request ->
+        if request.headers["user-agent"] =~ "MembraneRTSP",
+          do: MockCamera.response("RTSP/1.0 503 Service Unavailable"),
+          else: MockCamera.describe_response(@video_sdp)
+      end
+
+      script = MockCamera.script(@video_sdp, h264_media(96), %{"DESCRIBE" => picky})
+
+      assert connection_failure(script) =~ "DESCRIBE was answered with status 503"
+
+      {camera, port} = start_camera(script)
+      pipeline = CameraPipeline.start_supervised!(port, user_agent: "LibVLC/3.0.20")
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{})
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+    end
+  end
 end

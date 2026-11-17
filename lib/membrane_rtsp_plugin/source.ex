@@ -76,6 +76,14 @@ defmodule Membrane.RTSP.Source do
                 that timeout instead.
                 """
               ],
+              user_agent: [
+                spec: binary() | nil,
+                default: nil,
+                description: """
+                Value of the `User-Agent` header sent with every request, for servers that
+                treat clients differently by name. By default it is the one of `Membrane.RTSP`.
+                """
+              ],
               on_connection_closed: [
                 spec: :raise_error | :send_eos,
                 default: :raise_error,
@@ -104,6 +112,7 @@ defmodule Membrane.RTSP.Source do
             keep_alive_method: :get_parameter | :options,
             session_timeout: pos_integer() | nil,
             on_connection_closed: :raise_error | :send_eos,
+            user_agent: binary() | nil,
             end_of_stream: boolean(),
             play_request_sent: boolean()
           }
@@ -121,6 +130,7 @@ defmodule Membrane.RTSP.Source do
                   tracks: [],
                   ssrc_to_track: %{},
                   rtsp_session: nil,
+                  user_agent: nil,
                   keep_alive_timer: nil,
                   keep_alive_method: :get_parameter,
                   session_timeout: nil,

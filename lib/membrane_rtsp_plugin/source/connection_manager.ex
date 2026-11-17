@@ -139,14 +139,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   @spec start_rtsp_connection(Membrane.UtilitySupervisor.t(), State.t()) ::
           connection_establishment_phase_return()
   defp start_rtsp_connection(utility_supervisor, state) do
+    options = [response_timeout: Membrane.Time.as_milliseconds(state.timeout, :round)]
+
+    options =
+      if state.user_agent, do: options ++ [user_agent: state.user_agent], else: options
+
     rtsp_session_child_spec = %{
       id: RTSP,
-      start:
-        {RTSP, :start_link,
-         [
-           state.stream_uri,
-           [response_timeout: Membrane.Time.as_milliseconds(state.timeout, :round)]
-         ]}
+      start: {RTSP, :start_link, [state.stream_uri, options]}
     }
 
     case Membrane.UtilitySupervisor.start_child(utility_supervisor, rtsp_session_child_spec) do
