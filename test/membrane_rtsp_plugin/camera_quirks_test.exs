@@ -470,4 +470,109 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       end
     end
   end
+
+  describe "status code" do
+    @video_sdp """
+    v=0
+    o=- 0 0 IN IP4 127.0.0.1
+    s=Stream
+    t=0 0
+    m=video 0 RTP/AVP 96
+    a=rtpmap:96 H264/90000
+    a=control:trackID=0
+    """
+
+    # RFC 2326 section 7.1.1 takes the classes of status codes from HTTP: every 2xx is
+    # a success, and a client treats one it does not know as it treats 200
+    test "of the 2xx class other than 200 is a success" do
+      script =
+        MockCamera.script(@video_sdp, [], %{
+          "DESCRIBE" => fn _request ->
+            MockCamera.describe_response(@video_sdp)
+            |> String.replace("RTSP/1.0 200 OK", "RTSP/1.0 203 Non-Authoritative Information")
+          end,
+          "SETUP" => fn request ->
+            MockCamera.response("RTSP/1.0 201 Created", [
+              "Session: 1",
+              "Transport: " <> request.headers["transport"]
+            ])
+          end,
+          "PLAY" => fn _request ->
+            [
+              MockCamera.response("RTSP/1.0 250 Low on Storage Space", ["Session: 1"])
+              | h264_media(96)
+            ]
+          end
+        })
+
+      {camera, port} = start_camera(script)
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{})
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+    end
+
+    defp connection_failure(script) do
+      {_camera, port} = start_camera(script)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, _supervisor, pipeline} =
+          Membrane.Testing.Pipeline.start(
+            module: CameraPipeline,
+            custom_args: %{port: port, source_options: []}
+          )
+
+        monitor = Process.monitor(pipeline)
+
+        assert_receive {:DOWN, ^monitor, :process, ^pipeline,
+                        {:membrane_child_crash, :source,
+                         {%RuntimeError{message: message}, _stack}}},
+                       5_000
+
+        send(self(), {:failure, message})
+      end)
+
+      assert_received {:failure, message}
+      message
+    end
+
+    test "that refuses a request is named in the error" do
+      not_found = fn _request -> MockCamera.response("RTSP/1.0 404 Stream Not Found") end
+
+      assert connection_failure(MockCamera.script(@video_sdp, [], %{"DESCRIBE" => not_found})) ==
+               "RTSP connection failed, reason: :getting_rtsp_description_failed " <>
+                 "(DESCRIBE was answered with status 404)"
+
+      unsupported = fn _request -> MockCamera.response("RTSP/1.0 461 Unsupported Transport") end
+
+      assert connection_failure(MockCamera.script(@video_sdp, [], %{"SETUP" => unsupported})) ==
+               "RTSP connection failed, reason: :setting_up_rtsp_connection_failed " <>
+                 "(SETUP of \"trackID=0\" was answered with status 461)"
+
+      unavailable = fn _request -> MockCamera.response("RTSP/1.0 503 Service Unavailable") end
+
+      assert connection_failure(MockCamera.script(@video_sdp, [], %{"PLAY" => unavailable})) ==
+               "RTSP connection failed, reason: :play_rtsp_failed (PLAY was answered with status 503)"
+    end
+
+    test "200 for a description that cannot be used says what is wrong with it" do
+      no_sdp = fn _request ->
+        MockCamera.response("RTSP/1.0 200 OK", ["Content-Type: text/plain"])
+      end
+
+      assert connection_failure(MockCamera.script(@video_sdp, [], %{"DESCRIBE" => no_sdp})) =~
+               "the reply to DESCRIBE carried no session description"
+
+      audio_only = """
+      v=0
+      s=Stream
+      m=text 0 RTP/AVP 98
+      a=control:trackID=5
+      """
+
+      assert connection_failure(MockCamera.script(audio_only)) =~
+               "none of the media in the session description can be received: text"
+    end
+  end
 end
