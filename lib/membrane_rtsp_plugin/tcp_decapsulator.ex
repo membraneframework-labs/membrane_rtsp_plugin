@@ -129,7 +129,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
       {:ok, _expected_length, _actual_length} ->
         RTSP.handle_response(rtsp_session, rtsp_message_start)
 
-        {<<>>, complete_packets_binaries}
+        {<<>>, Enum.reverse(complete_packets_binaries)}
 
       {:error, expected_length, actual_length} when actual_length > expected_length ->
         rest_length = actual_length - expected_length
