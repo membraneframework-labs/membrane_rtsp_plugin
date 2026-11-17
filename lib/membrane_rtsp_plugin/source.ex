@@ -17,6 +17,20 @@ defmodule Membrane.RTSP.Source do
   When the element finishes setting up all tracks it will send a `t:set_up_tracks/0` notification.
   To receive a track a corresponding `Pad.ref(:output, control_path)` pad has to be connected,
   where each track's control path is provided in the `t:set_up_tracks/0` notification.
+
+  ## Servers that deviate from the specifications
+
+  RTSP servers, those in IP cameras in particular, often deviate from the RFCs in ways
+  that do not prevent other clients from playing their streams. The source accepts such
+  deviations where it can do so without guessing, and logs a warning for each of them.
+  When a track is described too poorly to be depayloaded (for example an AAC track
+  without a `config`), its RTP payload is sent on as it comes, like the payload of a codec
+  the source does not know. A track for which the description names no usable payload
+  type is left out of the `t:set_up_tracks/0` notification.
+
+  The `rtpmap` of a track is `nil` when the description has none and the payload type is
+  dynamic. For the static payload types of RFC 3551, such as 0 (PCMU) and 8 (PCMA), the
+  mapping that the RFC defines is reported.
   """
 
   use Membrane.Bin
