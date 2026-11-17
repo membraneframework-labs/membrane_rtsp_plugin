@@ -700,4 +700,56 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert_receive {:mock_camera, :request, "GET_PARAMETER", _request}, 900
     end
   end
+
+  describe "request sent by the server" do
+    # RFC 2326 lets the server send OPTIONS, GET_PARAMETER and SET_PARAMETER to the
+    # client, and some servers check with them that the client is still there.
+    # libavformat and GStreamer answer them.
+    test "between the RTP packets of an interleaved stream is answered and the stream goes on" do
+      [first | rest] = h264_media(96)
+      {second, rest} = Enum.split(rest, 20)
+
+      ping =
+        "GET_PARAMETER rtsp://localhost/stream RTSP/1.0\r\nCSeq: 7\r\nSession: 12345678\r\n\r\n"
+
+      # the second request is cut in two between TCP segments
+      {ping_start, ping_end} = String.split_at("OPTIONS * RTSP/1.0\r\nCSeq: 8\r\n\r\n", 12)
+
+      media = [[first, ping, second, ping_start], [ping_end | rest]]
+
+      {camera, port} = start_camera(MockCamera.script(@video_sdp, media))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_receive {:mock_camera, :response, "RTSP/1.0 200 OK\r\nCSeq: 7\r\nSession: 12345678"},
+                     2_000
+
+      assert_receive {:mock_camera, :response, "RTSP/1.0 200 OK\r\nCSeq: 8"}, 2_000
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+
+      # every access unit made it through, the requests cost nothing
+      Membrane.Testing.Pipeline.terminate(pipeline)
+      assert count_buffers(pipeline, {:sink, "trackID=0"}) == count_access_units()
+    end
+
+    defp count_buffers(pipeline, sink, count \\ 0) do
+      receive do
+        {Membrane.Testing.Pipeline, ^pipeline,
+         {:handle_child_notification, {{:buffer, _buffer}, ^sink}}} ->
+          count_buffers(pipeline, sink, count + 1)
+      after
+        0 -> count
+      end
+    end
+
+    # access units of the fixture: each starts with a parameter set or SEI that follows a slice
+    defp count_access_units() do
+      @h264
+      |> MockCamera.h264_rtp_packets(payload_type: 96)
+      |> Enum.map(fn <<_header::binary-size(4), timestamp::32, _rest::binary>> -> timestamp end)
+      |> Enum.uniq()
+      |> length()
+    end
+  end
 end
