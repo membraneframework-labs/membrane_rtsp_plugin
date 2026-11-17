@@ -302,4 +302,120 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       refute_received {:mock_camera, :request, "SETUP", _request}
     end
   end
+
+  describe "AAC track" do
+    @aac_frame <<0x21, 0x10, 0x04, 0x60, 0x8C, 0x1C>>
+
+    defp aac_packet(sequence_number, payload) do
+      payload
+      |> MockCamera.rtp_packet(
+        payload_type: 97,
+        sequence_number: sequence_number,
+        timestamp: sequence_number * 1024,
+        marker: true,
+        ssrc: 0xAAC
+      )
+      |> then(&MockCamera.interleaved(0, &1))
+    end
+
+    # one access unit, AAC-hbr: 16 bits of headers, 13 bits of size, 3 bits of index
+    defp aac_hbr_payload(frame), do: <<16::16, byte_size(frame)::13, 0::3, frame::binary>>
+
+    defp aac_sdp(fmtp_line) do
+      """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=audio 0 RTP/AVP 97
+      a=rtpmap:97 MPEG4-GENERIC/16000/1
+      #{fmtp_line}
+      a=control:trackID=1
+      """
+    end
+
+    # RFC 3640 writes the names in mixed case in its examples; libavformat reads the
+    # lengths and never looks at the mode
+    test "without a mode is depayloaded according to sizelength and indexlength" do
+      sdp =
+        aac_sdp(
+          "a=fmtp:97 streamtype=5; profile-level-id=15; config=1408; SizeLength=13; IndexLength=3; IndexDeltaLength=3;"
+        )
+
+      media = for n <- 0..3, do: aac_packet(n, aac_hbr_payload(@aac_frame))
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_sink_stream_format(pipeline, {:sink, "trackID=1"}, %Membrane.AAC{
+        sample_rate: 16_000,
+        channels: 1
+      })
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: payload})
+      assert String.ends_with?(payload, @aac_frame)
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+    end
+
+    test "with a packet that cannot be depayloaded loses that packet only" do
+      sdp =
+        aac_sdp(
+          "a=fmtp:97 mode=AAC-hbr;config=1408;sizelength=13;indexlength=3;indexdeltalength=3"
+        )
+
+      media = [
+        aac_packet(0, aac_hbr_payload(@aac_frame)),
+        # declares more AU headers than the packet holds
+        aac_packet(1, <<4000::16, 1, 2, 3>>),
+        aac_packet(2, aac_hbr_payload(<<0x21, 0x99>>))
+      ]
+
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: first})
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: second})
+          assert String.ends_with?(first, @aac_frame)
+          assert String.ends_with?(second, <<0x21, 0x99>>)
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+        end)
+
+      assert log =~ "Dropping an RTP packet"
+    end
+
+    # without them nothing can tell how the payload is laid out or what the decoder
+    # needs, so the payload is passed on untouched rather than guessed at
+    for {description, fmtp_line} <- [
+          {"without fmtp", "a=recvonly"},
+          {"without a config", "a=fmtp:97 mode=AAC-hbr;sizelength=13;indexlength=3"},
+          {"with neither a mode nor lengths", "a=fmtp:97 config=1408"}
+        ] do
+      test "#{description} is passed on as RTP payload" do
+        payload = aac_hbr_payload(@aac_frame)
+        media = [aac_packet(0, payload)]
+        {camera, port} = start_camera(MockCamera.script(aac_sdp(unquote(fmtp_line)), media))
+
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            pipeline = CameraPipeline.start_supervised!(port)
+
+            assert_sink_stream_format(pipeline, {:sink, "trackID=1"}, %Membrane.RTP{})
+
+            assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: ^payload})
+
+            MockCamera.close_connection(camera)
+            assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+          end)
+
+        assert log =~ "trackID=1"
+        assert log =~ "AAC"
+      end
+    end
+  end
 end

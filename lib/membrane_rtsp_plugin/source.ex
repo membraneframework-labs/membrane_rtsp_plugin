@@ -315,13 +315,21 @@ defmodule Membrane.RTSP.Source do
           Membrane.RTP.Opus.Depayloader
 
         {:audio, "mpeg4-generic"} ->
-          mode =
-            case track.fmtp do
-              %{mode: :AAC_hbr} -> :hbr
-              %{mode: :AAC_lbr} -> :lbr
-            end
+          case aac_mode(track) do
+            nil ->
+              Membrane.Logger.warning("""
+              Cannot depayload the AAC track #{inspect(track.control_path)}: its fmtp has to \
+              give the config and either the mode or sizelength and indexlength, got \
+              #{inspect(track.fmtp)}. Passing the RTP payload on as it is.
+              """)
 
-          %Membrane.RTP.AAC.Depayloader{mode: mode}
+              nil
+
+            # a packet from the network that cannot be parsed costs that packet,
+            # not the stream
+            mode ->
+              %Membrane.RTP.AAC.Depayloader{mode: mode}
+          end
 
         {_type, _encoding} ->
           nil
@@ -333,6 +341,25 @@ defmodule Membrane.RTSP.Source do
       builder
     end
   end
+
+  # Tells how the AAC access units are laid out in the RTP payload (RFC 3640), or `nil`
+  # when the description does not say enough to depayload and parse them.
+  #
+  # The mode decides, as it always has. Descriptions that leave it out are read by the
+  # lengths of the AU header fields, which is all libavformat looks at: 13 and 3 bits
+  # are those of AAC-hbr, 6 and 2 bits those of AAC-lbr.
+  @spec aac_mode(ConnectionManager.track()) :: Membrane.RTP.AAC.Utils.mode() | nil
+  defp aac_mode(%{fmtp: %ExSDP.Attribute.FMTP{config: config} = fmtp}) when is_binary(config) do
+    case fmtp do
+      %{mode: :AAC_hbr} -> :hbr
+      %{mode: :AAC_lbr} -> :lbr
+      %{mode: nil, sizelength: 13, indexlength: 3} -> :hbr
+      %{mode: nil, sizelength: 6, indexlength: 2} -> :lbr
+      _other -> nil
+    end
+  end
+
+  defp aac_mode(_track), do: nil
 
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp parser(link_builder, track), do: parser(link_builder, track, encoding(track))
@@ -358,9 +385,14 @@ defmodule Membrane.RTSP.Source do
   end
 
   defp parser(link_builder, %{type: :audio} = track, "mpeg4-generic") do
-    child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
-      audio_specific_config: track.fmtp.config
-    })
+    # no parser without a depayloader in front of it, see depayloader/2
+    if aac_mode(track) do
+      child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
+        audio_specific_config: track.fmtp.config
+      })
+    else
+      link_builder
+    end
   end
 
   defp parser(link_builder, _track, _encoding), do: link_builder
