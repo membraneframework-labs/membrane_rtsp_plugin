@@ -242,7 +242,7 @@ defmodule Membrane.RTSP.Source do
         state.tracks,
         fn %{rtpmap: rtpmap} ->
           {rtpmap.payload_type,
-           %{encoding_name: String.to_atom(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
+           %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
         end
       )
 
@@ -280,6 +280,20 @@ defmodule Membrane.RTSP.Source do
     end
   end
 
+  # Encoding names known to `Membrane.RTP.Demuxer`, which uses them to describe the
+  # stream it outputs. The name comes from the server, so it is looked up here instead
+  # of being turned into an atom, and compared case-insensitively (RFC 4855, section 3).
+  @encoding_names %{
+    "h264" => :H264,
+    "h265" => :H265,
+    "vp8" => :VP8,
+    "opus" => :opus,
+    "mpa" => :MPA
+  }
+
+  @spec encoding_name(String.t()) :: atom()
+  defp encoding_name(encoding), do: Map.get(@encoding_names, String.downcase(encoding), :unknown)
+
   @spec depayloader(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp depayloader(builder, track) do
     depayloader_definition =
@@ -314,33 +328,36 @@ defmodule Membrane.RTSP.Source do
   end
 
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
-  defp parser(link_builder, %{rtpmap: %{encoding: "H264"}} = track) do
-    sps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
-    pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
+  defp parser(link_builder, track) do
+    # the encoding name is case-insensitive, as in depayloader/2
+    case {track.type, String.downcase(track.rtpmap.encoding)} do
+      {_type, "h264"} ->
+        sps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
+        pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
 
-    child(link_builder, {:parser, make_ref()}, %Membrane.H264.Parser{
-      spss: List.wrap(sps),
-      ppss: List.wrap(pps),
-      repeat_parameter_sets: true
-    })
+        child(link_builder, {:parser, make_ref()}, %Membrane.H264.Parser{
+          spss: List.wrap(sps),
+          ppss: List.wrap(pps),
+          repeat_parameter_sets: true
+        })
+
+      {_type, "h265"} ->
+        child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
+          vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps) |> Enum.map(&clean_parameter_set/1),
+          spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
+          ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
+          repeat_parameter_sets: true
+        })
+
+      {:audio, "mpeg4-generic"} ->
+        child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
+          audio_specific_config: track.fmtp.config
+        })
+
+      {_type, _encoding} ->
+        link_builder
+    end
   end
-
-  defp parser(link_builder, %{rtpmap: %{encoding: "H265"}} = track) do
-    child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
-      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps) |> Enum.map(&clean_parameter_set/1),
-      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
-      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
-      repeat_parameter_sets: true
-    })
-  end
-
-  defp parser(link_builder, %{type: :audio, rtpmap: %{encoding: "mpeg4-generic"}} = track) do
-    child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
-      audio_specific_config: track.fmtp.config
-    })
-  end
-
-  defp parser(link_builder, _track), do: link_builder
 
   # a strange issue with one of Milesight camera where the parameter sets has
   # <<0, 0, 0, 1>> at the end
