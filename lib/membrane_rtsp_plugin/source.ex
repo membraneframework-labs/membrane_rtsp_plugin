@@ -213,9 +213,9 @@ defmodule Membrane.RTSP.Source do
       get_child(demuxer_name)
       |> via_out(:output,
         options: [
-          stream_id: {:payload_type, track.rtpmap.payload_type},
+          stream_id: {:payload_type, track.payload_type},
           jitter_buffer_latency: jitter_buffer_latency,
-          clock_rate: track.rtpmap.clock_rate
+          clock_rate: track.rtpmap && track.rtpmap.clock_rate
         ]
       )
       |> depayloader(track)
@@ -232,19 +232,20 @@ defmodule Membrane.RTSP.Source do
 
   @spec get_set_up_tracks_notification(State.t()) :: set_up_tracks_notification()
   defp get_set_up_tracks_notification(state) do
-    {:set_up_tracks, Enum.map(state.tracks, &Map.delete(&1, :transport))}
+    {:set_up_tracks,
+     Enum.map(state.tracks, &Map.drop(&1, [:transport, :payload_type, :sdp_rtpmap?]))}
   end
 
   @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
   defp create_sources_spec(state) do
+    # Only what the description says is handed to the demuxer. It resolves the static
+    # payload types on its own and passes the unknown ones on unparsed.
     payload_type_mapping =
-      Map.new(
-        state.tracks,
-        fn %{rtpmap: rtpmap} ->
-          {rtpmap.payload_type,
-           %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
-        end
-      )
+      for %{sdp_rtpmap?: true, rtpmap: rtpmap, payload_type: payload_type} <- state.tracks,
+          into: %{} do
+        {payload_type,
+         %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
+      end
 
     case state.transport do
       :tcp ->
@@ -294,10 +295,16 @@ defmodule Membrane.RTSP.Source do
   @spec encoding_name(String.t()) :: atom()
   defp encoding_name(encoding), do: Map.get(@encoding_names, String.downcase(encoding), :unknown)
 
+  # The encoding name of a track in lower case, since it is case-insensitive
+  # (RFC 4855, section 3), or `nil` when the description does not name it.
+  @spec encoding(ConnectionManager.track()) :: String.t() | nil
+  defp encoding(%{rtpmap: nil}), do: nil
+  defp encoding(%{rtpmap: rtpmap}), do: String.downcase(rtpmap.encoding)
+
   @spec depayloader(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp depayloader(builder, track) do
     depayloader_definition =
-      case {track.type, String.downcase(track.rtpmap.encoding)} do
+      case {track.type, encoding(track)} do
         {_type, "h264"} ->
           Membrane.RTP.H264.Depayloader
 
@@ -328,36 +335,35 @@ defmodule Membrane.RTSP.Source do
   end
 
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
-  defp parser(link_builder, track) do
-    # the encoding name is case-insensitive, as in depayloader/2
-    case {track.type, String.downcase(track.rtpmap.encoding)} do
-      {_type, "h264"} ->
-        sps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
-        pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
+  defp parser(link_builder, track), do: parser(link_builder, track, encoding(track))
 
-        child(link_builder, {:parser, make_ref()}, %Membrane.H264.Parser{
-          spss: List.wrap(sps),
-          ppss: List.wrap(pps),
-          repeat_parameter_sets: true
-        })
+  defp parser(link_builder, track, "h264") do
+    sps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
+    pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
 
-      {_type, "h265"} ->
-        child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
-          vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps) |> Enum.map(&clean_parameter_set/1),
-          spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
-          ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
-          repeat_parameter_sets: true
-        })
-
-      {:audio, "mpeg4-generic"} ->
-        child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
-          audio_specific_config: track.fmtp.config
-        })
-
-      {_type, _encoding} ->
-        link_builder
-    end
+    child(link_builder, {:parser, make_ref()}, %Membrane.H264.Parser{
+      spss: List.wrap(sps),
+      ppss: List.wrap(pps),
+      repeat_parameter_sets: true
+    })
   end
+
+  defp parser(link_builder, track, "h265") do
+    child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
+      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps) |> Enum.map(&clean_parameter_set/1),
+      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
+      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
+      repeat_parameter_sets: true
+    })
+  end
+
+  defp parser(link_builder, %{type: :audio} = track, "mpeg4-generic") do
+    child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
+      audio_specific_config: track.fmtp.config
+    })
+  end
+
+  defp parser(link_builder, _track, _encoding), do: link_builder
 
   # a strange issue with one of Milesight camera where the parameter sets has
   # <<0, 0, 0, 1>> at the end

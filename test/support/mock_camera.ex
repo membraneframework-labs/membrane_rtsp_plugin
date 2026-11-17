@@ -17,9 +17,9 @@ defmodule Membrane.RTSP.MockCamera do
 
   @type request :: %{url: binary(), headers: %{binary() => binary()}, raw: binary()}
 
-  @spec start_link((binary(), request() -> iodata() | [iodata()] | :close)) ::
+  @spec start_link((binary(), request() -> iodata() | [iodata()] | :close), pid()) ::
           GenServer.on_start()
-  def start_link(script), do: GenServer.start_link(__MODULE__, {script, self()})
+  def start_link(script, owner \\ self()), do: GenServer.start_link(__MODULE__, {script, owner})
 
   @spec port(pid()) :: :inet.port_number()
   def port(camera), do: GenServer.call(camera, :port)
