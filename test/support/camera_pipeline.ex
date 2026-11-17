@@ -15,13 +15,15 @@ defmodule Membrane.RTSP.CameraPipeline do
 
   @impl true
   def handle_init(_ctx, %{port: port, source_options: source_options}) do
-    path = Keyword.get(source_options, :path, "/stream")
+    {path, source_options} = Keyword.pop(source_options, :path, "/stream")
+    {userinfo, source_options} = Keyword.pop(source_options, :userinfo)
+    authority = if userinfo, do: "#{userinfo}@localhost:#{port}", else: "localhost:#{port}"
 
     source =
       struct!(
         Membrane.RTSP.Source,
-        [stream_uri: "rtsp://localhost:#{port}#{path}", on_connection_closed: :send_eos] ++
-          Keyword.delete(source_options, :path)
+        [stream_uri: "rtsp://#{authority}#{path}", on_connection_closed: :send_eos] ++
+          source_options
       )
 
     {[spec: child(:source, source)], %{}}
