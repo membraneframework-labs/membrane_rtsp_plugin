@@ -471,6 +471,82 @@ defmodule Membrane.RTSP.CameraQuirksTest do
     end
   end
 
+  describe "parameter sets in the description" do
+    @h265 File.read!("test/fixtures/in.hevc")
+
+    test "of H265 that carry start codes are used without them" do
+      [vps, sps, pps | _rest] =
+        :binary.split(@h265, <<0, 0, 0, 1>>, [:global]) |> Enum.reject(&(&1 == ""))
+
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H265/90000
+      a=fmtp:96 sprop-vps=#{Base.encode64(<<0, 0, 0, 1>> <> vps)};sprop-sps=#{Base.encode64(sps <> <<0, 0, 1>>)};sprop-pps=#{Base.encode64(<<0, 0, 1>> <> pps <> <<0, 0, 0, 1>>)}
+      a=control:trackID=0
+      """
+
+      # the stream itself carries no parameter sets, they are only in the description
+      media =
+        @h265
+        |> MockCamera.h265_rtp_packets(payload_type: 96)
+        |> Enum.reject(fn <<_rtp_header::binary-size(12), _forbidden::1, type::6,
+                            _rest::bitstring>> ->
+          type in 32..34
+        end)
+        |> Enum.map(&MockCamera.interleaved(0, &1))
+
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        pipeline = CameraPipeline.start_supervised!(port)
+
+        assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H265{width: width})
+        assert is_integer(width)
+        assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{payload: payload})
+        assert payload =~ sps
+
+        MockCamera.close_connection(camera)
+        assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+      end)
+    end
+
+    # gortsplib "video h264 with unparsable parameters" (mediamtx#2348); libavformat
+    # carries on with the parameter sets of the stream
+    test "that cannot be parsed are left out and the stream is played with its own" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H264/90000
+      a=fmtp:96 packetization-mode=1;sprop-parameter-sets=#{Base.encode64(<<0x67, 1, 2>>)},#{Base.encode64(<<0x68>>)}
+      a=control:trackID=0
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, h264_media(96)))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+          assert_receive {:mock_camera, :request, "PLAY", _request}, 2_000
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+          Membrane.Testing.Pipeline.terminate(pipeline)
+
+          # nothing is lost, not even the first keyframe
+          assert count_buffers(pipeline, {:sink, "trackID=0"}) == count_access_units()
+        end)
+
+      assert log =~ "Ignoring a parameter set that cannot be parsed"
+    end
+  end
+
   describe "status code" do
     @video_sdp """
     v=0
