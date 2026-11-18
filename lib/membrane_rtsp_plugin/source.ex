@@ -376,16 +376,17 @@ defmodule Membrane.RTSP.Source do
   # Tells how the AAC access units are laid out in the RTP payload (RFC 3640), or `nil`
   # when the description does not say enough to depayload and parse them.
   #
-  # The mode decides, as it always has. Descriptions that leave it out are read by the
-  # lengths of the AU header fields, which is all libavformat looks at: 13 and 3 bits
-  # are those of AAC-hbr, 6 and 2 bits those of AAC-lbr.
+  # The mode decides, as it always has. Descriptions that leave it out, or give the
+  # mode "generic", which leaves the layout to the lengths, are read by the lengths
+  # of the AU header fields, which is all libavformat looks at: 13 and 3 bits are
+  # those of AAC-hbr, 6 and 2 bits those of AAC-lbr.
   @spec aac_mode(ConnectionManager.track()) :: Membrane.RTP.AAC.Utils.mode() | nil
   defp aac_mode(%{fmtp: %ExSDP.Attribute.FMTP{config: config} = fmtp}) when is_binary(config) do
     case fmtp do
       %{mode: :AAC_hbr} -> :hbr
       %{mode: :AAC_lbr} -> :lbr
-      %{mode: nil, sizelength: 13, indexlength: 3} -> :hbr
-      %{mode: nil, sizelength: 6, indexlength: 2} -> :lbr
+      %{mode: mode, sizelength: 13, indexlength: 3} when mode in [nil, :generic] -> :hbr
+      %{mode: mode, sizelength: 6, indexlength: 2} when mode in [nil, :generic] -> :lbr
       _other -> nil
     end
   end
