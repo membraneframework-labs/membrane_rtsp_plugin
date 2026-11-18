@@ -318,6 +318,7 @@ defmodule Membrane.RTSP.Source do
     "h264" => :H264,
     "h265" => :H265,
     "vp8" => :VP8,
+    "aac" => :AAC,
     "opus" => :opus,
     "mpa" => :MPA
   }
@@ -394,22 +395,25 @@ defmodule Membrane.RTSP.Source do
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp parser(link_builder, track), do: parser(link_builder, track, encoding(track))
 
+  # The parameter sets of the description are given to the parsers as they come. A
+  # start code that some servers leave on them, and a set that cannot be parsed, are
+  # the parsers' to deal with.
   defp parser(link_builder, track, "h264") do
     sps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
     pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
 
     child(link_builder, {:parser, make_ref()}, %Membrane.H264.Parser{
-      spss: parameter_sets(sps),
-      ppss: parameter_sets(pps),
+      spss: List.wrap(sps),
+      ppss: List.wrap(pps),
       repeat_parameter_sets: true
     })
   end
 
   defp parser(link_builder, track, "h265") do
     child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
-      vpss: parameter_sets(track.fmtp && track.fmtp.sprop_vps),
-      spss: parameter_sets(track.fmtp && track.fmtp.sprop_sps),
-      ppss: parameter_sets(track.fmtp && track.fmtp.sprop_pps),
+      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps),
+      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps),
+      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps),
       repeat_parameter_sets: true
     })
   end
@@ -426,50 +430,4 @@ defmodule Membrane.RTSP.Source do
   end
 
   defp parser(link_builder, _track, _encoding), do: link_builder
-
-  # Parameter sets as the description gives them, ready for the parser.
-  #
-  # Some servers encode the NAL units together with an Annex B start code, either in
-  # front (seen by gortsplib) or behind (a Milesight camera, already handled here for
-  # H265). The parser wants the bare NAL units and crashes on the empty one that a
-  # stray start code leaves behind, so the start codes are removed and a set with
-  # nothing left is dropped.
-  @spec parameter_sets(binary() | [binary()] | nil) :: [binary()]
-  defp parameter_sets(sets) do
-    sets
-    |> List.wrap()
-    |> Enum.map(&clean_parameter_set/1)
-    |> Enum.reject(&(&1 == <<>>))
-  end
-
-  @spec clean_parameter_set(binary()) :: binary()
-  defp clean_parameter_set(ps) do
-    case strip_start_codes(ps) do
-      ^ps ->
-        ps
-
-      cleaned ->
-        Membrane.Logger.warning(
-          "Removed an Annex B start code from a parameter set given in the session description"
-        )
-
-        cleaned
-    end
-  end
-
-  defp strip_start_codes(<<0, 0, 0, 1, rest::binary>>), do: strip_start_codes(rest)
-  defp strip_start_codes(<<0, 0, 1, rest::binary>>), do: strip_start_codes(rest)
-
-  defp strip_start_codes(ps) do
-    cond do
-      String.ends_with?(ps, <<0, 0, 0, 1>>) ->
-        strip_start_codes(binary_part(ps, 0, byte_size(ps) - 4))
-
-      String.ends_with?(ps, <<0, 0, 1>>) ->
-        strip_start_codes(binary_part(ps, 0, byte_size(ps) - 3))
-
-      true ->
-        ps
-    end
-  end
 end
