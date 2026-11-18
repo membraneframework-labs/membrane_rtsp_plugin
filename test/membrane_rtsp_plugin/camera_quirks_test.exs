@@ -452,6 +452,26 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
     end
 
+    # the mode "generic" leaves the layout of the AU headers to the lengths
+    test "with the mode generic is depayloaded according to sizelength and indexlength" do
+      sdp =
+        aac_sdp(
+          "a=fmtp:97 mode=generic;config=1408;sizelength=13;indexlength=3;indexdeltalength=3"
+        )
+
+      media = for n <- 0..3, do: aac_packet(n, aac_hbr_payload(@aac_frame))
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_sink_stream_format(pipeline, {:sink, "trackID=1"}, %Membrane.AAC{sample_rate: 16_000})
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: payload})
+      assert String.ends_with?(payload, @aac_frame)
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+    end
+
     test "with a packet that cannot be depayloaded loses that packet only" do
       sdp =
         aac_sdp(
