@@ -172,18 +172,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     case RTSP.describe(rtsp_session, @content_type_header) do
       {:ok, %RTSP.Response{status: status, body: %ExSDP{} = sdp} = response}
       when status in 200..299 ->
-        case get_tracks(response, state.allowed_media_types) do
-          [] ->
-            media_types = Enum.map_join(sdp.media, ", ", &to_string(&1.type))
+        tracks =
+          response
+          |> get_tracks(state.allowed_media_types)
+          |> distinguishable(state.transport)
 
-            {:error,
-             {:no_tracks,
-              "none of the media in the session description can be received: #{media_types}"},
-             state}
-
-          tracks ->
-            {:ok, %{state | tracks: tracks}}
-        end
+        if tracks == [],
+          do: {:error, {:no_tracks, describe_lack_of_tracks(sdp)}, state},
+          else: {:ok, %{state | tracks: tracks}}
 
       {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
         {:error,
@@ -362,6 +358,14 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
+  @spec describe_lack_of_tracks(ExSDP.t()) :: String.t()
+  defp describe_lack_of_tracks(%ExSDP{media: []}), do: "the session description has no media"
+
+  defp describe_lack_of_tracks(%ExSDP{media: media}) do
+    types = Enum.map_join(media, ", ", &to_string(&1.type))
+    "none of the media in the session description can be received: #{types}"
+  end
+
   # Says what the server did instead of accepting the request, for the error message.
   @spec describe_failure(String.t(), RTSP.Response.result()) :: String.t()
   defp describe_failure(request, {:ok, %RTSP.Response{status: status}}),
@@ -417,6 +421,34 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       end
     end)
   end
+
+  # Over one TCP connection all the tracks go through one RTP demuxer, which tells them
+  # apart by payload type. A track that uses the payload type of an earlier one could
+  # not be delivered to its own pad, so it is left out. With UDP every track has a
+  # demuxer of its own.
+  @spec distinguishable([track()], Membrane.RTSP.Source.transport()) :: [track()]
+  defp distinguishable(tracks, :tcp) do
+    {tracks, _payload_types} =
+      Enum.flat_map_reduce(tracks, %{}, fn track, used ->
+        case Map.fetch(used, track.payload_type) do
+          {:ok, other_control_path} ->
+            Membrane.Logger.warning(
+              "Leaving out the #{track.type} track #{inspect(track.control_path)}: it uses " <>
+                "payload type #{track.payload_type}, like the track " <>
+                "#{inspect(other_control_path)}, and they cannot be told apart"
+            )
+
+            {[], used}
+
+          :error ->
+            {[track], Map.put(used, track.payload_type, track.control_path)}
+        end
+      end)
+
+    tracks
+  end
+
+  defp distinguishable(tracks, _udp), do: tracks
 
   # Encoding names, clock rates and channel counts that RFC 3551 (tables 4 and 5)
   # assigns to static payload types. A media section does not need an rtpmap for them.
