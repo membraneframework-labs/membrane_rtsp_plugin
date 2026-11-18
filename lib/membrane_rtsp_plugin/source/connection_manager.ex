@@ -103,7 +103,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   # GET_PARAMETER is used when the server lists it in the Public header, OPTIONS when
   # the header is there without it; that is what libavformat, GStreamer and gortsplib
   # do. A server that refuses OPTIONS or sends no Public header is not failed for it:
-  # it gets GET_PARAMETER, which is what this element has always sent.
+  # it gets GET_PARAMETER, which is what this element has always sent. A server that
+  # does not answer at all is.
   @spec choose_keep_alive_method(State.t()) :: connection_establishment_phase_return()
   defp choose_keep_alive_method(state) do
     with {:ok, %RTSP.Response{status: status} = response} when status in 200..299 <-
@@ -125,13 +126,19 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       {:error, :no_such_header} ->
         {:ok, state}
 
-      other ->
+      {:ok, %RTSP.Response{}} = refused ->
         Membrane.Logger.warning(
-          "#{describe_failure("OPTIONS", other)}, carrying on without knowing the methods " <>
-            "of the server"
+          "#{describe_failure("OPTIONS", refused)}, carrying on without knowing the " <>
+            "methods of the server"
         )
 
         {:ok, state}
+
+      # No answer at all. Going on would let an answer that comes late be taken for
+      # the one to the next request, and a server that does not answer OPTIONS is not
+      # one that libavformat or GStreamer can use either.
+      {:error, _reason} = failed ->
+        {:error, {:getting_rtsp_options_failed, describe_failure("OPTIONS", failed)}, state}
     end
   end
 
