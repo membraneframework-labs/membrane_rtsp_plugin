@@ -756,7 +756,35 @@ defmodule Membrane.RTSP.CameraQuirksTest do
           assert Process.alive?(pipeline)
         end)
 
-      assert log =~ "405"
+      assert log =~ "OPTIONS was answered with status 405"
+    end
+
+    # Going on to DESCRIBE would let a late answer to OPTIONS be taken for the answer
+    # to DESCRIBE, and libavformat does not use a server that fails OPTIONS either.
+    test "is not attempted with a server that does not answer OPTIONS at all" do
+      script = MockCamera.script(@video_sdp, [], %{"OPTIONS" => fn _request -> "" end})
+      {_camera, port} = start_camera(script)
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, _supervisor, pipeline} =
+          Membrane.Testing.Pipeline.start(
+            module: CameraPipeline,
+            custom_args: %{port: port, source_options: [timeout: Membrane.Time.milliseconds(300)]}
+          )
+
+        monitor = Process.monitor(pipeline)
+
+        assert_receive {:DOWN, ^monitor, :process, ^pipeline,
+                        {:membrane_child_crash, :source,
+                         {%RuntimeError{message: message}, _stack}}},
+                       5_000
+
+        assert message ==
+                 "RTSP connection failed, reason: :getting_rtsp_options_failed " <>
+                   "(OPTIONS failed with :timeout)"
+      end)
+
+      refute_received {:mock_camera, :request, "DESCRIBE", _request}
     end
 
     # RFC 2326 section 12.37: the server may close a session that it has not heard
