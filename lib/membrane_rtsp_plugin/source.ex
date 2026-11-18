@@ -266,17 +266,19 @@ defmodule Membrane.RTSP.Source do
      Enum.map(state.tracks, &Map.drop(&1, [:transport, :payload_type, :sdp_rtpmap?]))}
   end
 
+  # Only what the description says is handed to a demuxer. It resolves the static
+  # payload types on its own and passes the unknown ones on unparsed.
+  @spec payload_type_mapping([ConnectionManager.track()]) ::
+          Membrane.RTP.PayloadFormat.payload_type_mapping()
+  defp payload_type_mapping(tracks) do
+    for %{sdp_rtpmap?: true, rtpmap: rtpmap, payload_type: payload_type} <- tracks, into: %{} do
+      {payload_type,
+       %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
+    end
+  end
+
   @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
   defp create_sources_spec(state) do
-    # Only what the description says is handed to the demuxer. It resolves the static
-    # payload types on its own and passes the unknown ones on unparsed.
-    payload_type_mapping =
-      for %{sdp_rtpmap?: true, rtpmap: rtpmap, payload_type: payload_type} <- state.tracks,
-          into: %{} do
-        {payload_type,
-         %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
-      end
-
     case state.transport do
       :tcp ->
         {:tcp, socket} = List.first(state.tracks).transport
@@ -287,12 +289,16 @@ defmodule Membrane.RTSP.Source do
           on_connection_closed: state.on_connection_closed
         })
         |> child(:tcp_decapsulator, %RTSP.TCP.Decapsulator{rtsp_session: state.rtsp_session})
-        |> child(:rtp_demuxer, %Membrane.RTP.Demuxer{payload_type_mapping: payload_type_mapping})
+        |> child(:rtp_demuxer, %Membrane.RTP.Demuxer{
+          payload_type_mapping: payload_type_mapping(state.tracks)
+        })
 
       {:udp, _port_range_start, _port_range_end} ->
         [
           Enum.flat_map(state.tracks, fn track ->
             {:udp, rtp_port, rtcp_port} = track.transport
+            # each track has demuxers of its own, so two tracks may use one payload type
+            payload_type_mapping = payload_type_mapping([track])
 
             [
               child({:udp_source, rtp_port}, %Membrane.UDP.Source{local_port_no: rtp_port})

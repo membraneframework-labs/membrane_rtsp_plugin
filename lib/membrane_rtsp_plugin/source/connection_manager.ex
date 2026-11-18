@@ -445,7 +445,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   # Over one TCP connection all the tracks go through one RTP demuxer, which tells them
   # apart by payload type. A track that uses the payload type of an earlier one could
   # not be delivered to its own pad, so it is left out. With UDP every track has a
-  # demuxer of its own.
+  # demuxer of its own, which is given the payload type of that track only.
   @spec distinguishable([track()], Membrane.RTSP.Source.transport()) :: [track()]
   defp distinguishable(tracks, :tcp) do
     {tracks, _payload_types} =
