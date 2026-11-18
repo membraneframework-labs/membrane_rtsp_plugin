@@ -27,7 +27,6 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
 
   def_output_pad :output, accepted_format: %RemoteStream{type: :packetized, content_format: RTP}
 
-  # How a request starts: one of the methods of RTSP followed by a space.
   @rtsp_request_starts ~w(OPTIONS GET_PARAMETER SET_PARAMETER ANNOUNCE REDIRECT PLAY_NOTIFY
                           DESCRIBE SETUP PLAY PAUSE RECORD TEARDOWN)
                        |> Enum.map(&(&1 <> " "))
@@ -99,9 +98,6 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
     handle_rtsp_message(rtsp_message_start, rtsp_session, complete_packets_binaries)
   end
 
-  # A server may send requests of its own between the packets, typically OPTIONS,
-  # GET_PARAMETER or SET_PARAMETER to check that the client is still there. They are
-  # handed to the session like the responses, and the session answers them.
   for request_start <- @rtsp_request_starts do
     defp get_complete_packets(
            <<unquote(request_start), _rest::binary>> = rtsp_message_start,

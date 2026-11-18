@@ -77,10 +77,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
         %{state | keep_alive_timer: start_keep_alive_timer(state)}
 
-      # The server says that it does not do GET_PARAMETER, whatever it said before.
-      # These are the statuses that GStreamer takes for "not implemented". OPTIONS is
-      # the request that every server has to implement. Any other failure, such as
-      # 454 Session Not Found, still ends the stream below.
+      # Only "not implemented" answers switch to OPTIONS. Any other failure, such as
+      # 454 Session Not Found, must still end the stream.
       {:ok, %RTSP.Response{status: status}}
       when method == :get_parameter and status in @not_implemented_statuses ->
         Membrane.Logger.warning(
@@ -98,13 +96,8 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   defp keep_alive_request(:get_parameter), do: "GET_PARAMETER"
   defp keep_alive_request(:options), do: "OPTIONS"
 
-  # Asks the server which methods it implements, to know how to keep the session alive.
-  #
-  # GET_PARAMETER is used when the server lists it in the Public header, OPTIONS when
-  # the header is there without it; that is what libavformat, GStreamer and gortsplib
-  # do. A server that refuses OPTIONS or sends no Public header is not failed for it:
-  # it gets GET_PARAMETER, which is what this element has always sent. A server that
-  # does not answer at all is.
+  # GET_PARAMETER if the server lists it in Public, OPTIONS if Public lacks it,
+  # GET_PARAMETER when nothing is known.
   @spec choose_keep_alive_method(State.t()) :: connection_establishment_phase_return()
   defp choose_keep_alive_method(state) do
     with {:ok, %RTSP.Response{status: status} = response} when status in 200..299 <-
@@ -226,7 +219,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   defp keep_alive_interval(%{session_timeout: timeout, keep_alive_interval: interval}),
     do: min(interval, div(Membrane.Time.seconds(timeout), 2))
 
-  # Remembers the session timeout announced in the reply to SETUP.
   @spec store_session_timeout(State.t(), RTSP.Response.t()) :: State.t()
   defp store_session_timeout(state, response) do
     case RTSP.Response.parse_session_header(response) do
@@ -278,10 +270,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end)
   end
 
-  # The server names the transport it has chosen in its reply. When that is not the
-  # interleaved one that was asked for, no media will arrive on the connection, and
-  # nothing else would say why. The reply is not refused: what a server writes there
-  # and what it does are not always the same.
   @spec warn_unless_interleaved(RTSP.Response.t(), track()) :: :ok
   defp warn_unless_interleaved(response, track) do
     with {:ok, transport} <- RTSP.Response.get_header(response, "Transport"),
@@ -386,7 +374,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     "none of the media in the session description can be received: #{types}"
   end
 
-  # Says what the server did instead of accepting the request, for the error message.
   @spec describe_failure(String.t(), RTSP.Response.result()) :: String.t()
   defp describe_failure(request, {:ok, %RTSP.Response{status: status}}),
     do: "#{request} was answered with status #{status}"
@@ -394,8 +381,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   defp describe_failure(request, {:error, reason}),
     do: "#{request} failed with #{inspect(reason)}"
 
-  # The reason is either a bare term or `{reason, description}`, where the description
-  # says what the server sent that could not be handled.
   @spec handle_rtsp_error(term(), State.t()) :: no_return()
   defp handle_rtsp_error(reason, state) do
     message =
@@ -442,10 +427,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end)
   end
 
-  # Over one TCP connection all the tracks go through one RTP demuxer, which tells them
-  # apart by payload type. A track that uses the payload type of an earlier one could
-  # not be delivered to its own pad, so it is left out. With UDP every track has a
-  # demuxer of its own, which is given the payload type of that track only.
+  # One demuxer serves all the tracks of a TCP connection and tells them apart by payload type.
   @spec distinguishable([track()], Membrane.RTSP.Source.transport()) :: [track()]
   defp distinguishable(tracks, :tcp) do
     {tracks, _payload_types} =
@@ -499,12 +481,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     34 => {"H263", 90_000, nil}
   }
 
-  # Tells which RTP payload type the media will be sent with and how it is encoded.
-  #
-  # The payload type is the first format of the media line, the one that libavformat
-  # and live555 use as well, and the rtpmap is the one given for that payload type,
-  # wherever it stands among the attributes. Returns whether the rtpmap came from the
-  # description or from the static assignments of RFC 3551.
+  # The first format of the media line decides, as in libavformat and live555.
   @spec get_payload_format(ExSDP.Media.t()) ::
           {:ok, RTP.payload_type(), ExSDP.Attribute.RTPMapping.t() | nil, boolean()}
           | {:error, String.t()}
@@ -513,8 +490,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     get_payload_format(media, payload_type)
   end
 
-  # The formats are not payload types. Some servers put another token there and name
-  # the payload type only in the rtpmap, which then decides.
   defp get_payload_format(%ExSDP.Media{fmt: fmt} = media) do
     case ExSDP.get_attributes(media, :rtpmap) do
       [%ExSDP.Attribute.RTPMapping{payload_type: payload_type} | _rest] ->
@@ -561,7 +536,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
         {:ok, payload_type, rtpmap, false}
 
       nil when payload_type >= 96 ->
-        # nothing says what the payload is, so it can only be passed on as it comes
         Membrane.Logger.warning(
           "The #{media.type} media has no rtpmap for its payload type #{payload_type}, " <>
             "its RTP payload will be passed on as it comes"
@@ -575,8 +549,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
-  # The fmtp of the payload type in use. When the only fmtp names another payload type,
-  # it is still used, as it always was: it cannot describe anything but this stream.
   @spec get_fmtp(ExSDP.Media.t(), RTP.payload_type()) :: ExSDP.Attribute.FMTP.t() | nil
   defp get_fmtp(media, payload_type) do
     case ExSDP.get_attributes(media, :fmtp) do
@@ -600,7 +572,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
   defp lone_fmtp(_media, _fmtps, _payload_type), do: nil
 
-  # The value of an attribute that the description gives as a name and a value.
   @spec get_attribute(ExSDP.Media.t(), atom() | binary(), default) :: term() | default
         when default: var
   defp get_attribute(media, attribute, default) do

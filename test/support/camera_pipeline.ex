@@ -1,7 +1,5 @@
 defmodule Membrane.RTSP.CameraPipeline do
   @moduledoc false
-  # Connects Membrane.RTSP.Source to a server and links every track it sets up to a
-  # Membrane.Testing.Sink named `{:sink, control_path}`.
 
   use Membrane.Pipeline
 
