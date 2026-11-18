@@ -255,8 +255,9 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert log =~ ~s(Leaving out the application track "trackID=3": payload type 95)
     end
 
-    # gortsplib lists TCP among the transport tokens it accepts in a media line
-    test "with a transport that the SDP parser does not know to be RTP is set up by its format" do
+    # the transport that servers name for RTP interleaved on the RTSP connection;
+    # its formats are payload types like those of RTP/AVP
+    test "with the transport RTP/AVP/TCP is set up by its format" do
       sdp = """
       v=0
       o=- 0 0 IN IP4 127.0.0.1
@@ -355,6 +356,53 @@ defmodule Membrane.RTSP.CameraQuirksTest do
 
       assert log =~
                "The fmtp of the audio media is given for payload type 97, using it for payload type 104"
+    end
+
+    # Over UDP every track has its own ports and demuxer, so tracks may share a payload
+    # type; servers built with GStreamer give 96 to every stream unless told otherwise.
+    test "that shares its payload type with another one is received over UDP" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H264/90000
+      a=control:trackID=0
+      m=audio 0 RTP/AVP 96
+      a=rtpmap:96 opus/48000/2
+      a=control:trackID=1
+      """
+
+      {_camera, port} = start_camera(MockCamera.script(sdp))
+      pipeline = CameraPipeline.start_supervised!(port, transport: {:udp, 22_000, 22_020})
+
+      assert_pipeline_notified(pipeline, :source, {:set_up_tracks, [_video, _audio]})
+
+      assert_receive {:mock_camera, :request, "SETUP",
+                      %{url: video_url, headers: %{"transport" => transport}}},
+                     2_000
+
+      assert video_url =~ "trackID=0"
+      [_match, rtp_port] = Regex.run(~r/client_port=(\d+)-/, transport)
+      assert_receive {:mock_camera, :request, "PLAY", _request}, 2_000
+
+      {:ok, socket} = :gen_udp.open(0)
+
+      for packet <- MockCamera.h264_rtp_packets(@h264, payload_type: 96, max_payload_size: 1400) do
+        :ok = :gen_udp.send(socket, ~c"localhost", String.to_integer(rtp_port), packet)
+      end
+
+      # the video is taken for H264, not for the encoding of the other track
+      assert_sink_stream_format(
+        pipeline,
+        {:sink, "trackID=0"},
+        %Membrane.H264{alignment: :au},
+        5_000
+      )
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{}, 5_000)
+      :gen_udp.close(socket)
     end
 
     test "that names no usable payload type is left out, and the others are set up" do
