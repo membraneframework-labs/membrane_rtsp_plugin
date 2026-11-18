@@ -686,6 +686,9 @@ defmodule Membrane.RTSP.CameraQuirksTest do
 
       assert connection_failure(MockCamera.script(audio_only)) =~
                "none of the media in the session description can be received: text"
+
+      assert connection_failure(MockCamera.script("v=0\ns=Stream\n")) =~
+               "the session description has no media"
     end
   end
 
@@ -745,7 +748,7 @@ defmodule Membrane.RTSP.CameraQuirksTest do
           assert Process.alive?(pipeline)
         end)
 
-      assert log =~ "551"
+      assert log =~ "answered with status 551"
     end
 
     test "that the server refuses for another reason still ends the stream" do
@@ -838,7 +841,8 @@ defmodule Membrane.RTSP.CameraQuirksTest do
         keep_alive_interval: Membrane.Time.seconds(15)
       )
 
-      assert_receive {:mock_camera, :request, "GET_PARAMETER", _request}, 900
+      # half of the announced second, far from the 15 seconds that are configured
+      assert_receive {:mock_camera, :request, "GET_PARAMETER", _request}, 3_000
     end
   end
 

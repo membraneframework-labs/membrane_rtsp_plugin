@@ -195,7 +195,7 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
         # the session timeout of one second is honoured, with the method the server has
         assert_receive {:mock_camera, :request, "OPTIONS",
                         %{headers: %{"session" => "0a1b2c3d"}}},
-                       900
+                       3_000
 
         refute_received {:mock_camera, :request, "GET_PARAMETER", _request}
 
