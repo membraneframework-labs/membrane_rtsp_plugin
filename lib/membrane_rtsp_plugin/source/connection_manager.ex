@@ -493,28 +493,20 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     get_payload_format(media, payload_type)
   end
 
-  defp get_payload_format(%ExSDP.Media{fmt: fmt} = media) when is_binary(fmt) do
-    case fmt |> String.split() |> List.first("") |> Integer.parse() do
-      # The parser leaves the formats unparsed for a transport that it does not know
-      # to be RTP, such as "RTP/AVP/TCP", and when something follows them.
-      {payload_type, ""} when payload_type in 0..127 ->
+  # The formats are not payload types. Some servers put another token there and name
+  # the payload type only in the rtpmap, which then decides.
+  defp get_payload_format(%ExSDP.Media{fmt: fmt} = media) do
+    case ExSDP.get_attributes(media, :rtpmap) do
+      [%ExSDP.Attribute.RTPMapping{payload_type: payload_type} | _rest] ->
+        Membrane.Logger.warning(
+          "The format #{inspect(fmt)} of the #{media.type} media is not an RTP payload " <>
+            "type, using payload type #{payload_type} of its rtpmap"
+        )
+
         get_payload_format(media, payload_type)
 
-      # The formats are not payload types. Some servers put another token there and
-      # name the payload type only in the rtpmap, which then decides.
-      _not_a_payload_type ->
-        case ExSDP.get_attributes(media, :rtpmap) do
-          [%ExSDP.Attribute.RTPMapping{payload_type: payload_type} | _rest] ->
-            Membrane.Logger.warning(
-              "The format #{inspect(fmt)} of the #{media.type} media is not an RTP payload " <>
-                "type, using payload type #{payload_type} of its rtpmap"
-            )
-
-            get_payload_format(media, payload_type)
-
-          [] ->
-            {:error, "its format #{inspect(fmt)} is not an RTP payload type and it has no rtpmap"}
-        end
+      [] ->
+        {:error, "its format #{inspect(fmt)} is not an RTP payload type and it has no rtpmap"}
     end
   end
 
