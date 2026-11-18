@@ -27,7 +27,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
   end
 
   describe "encoding name" do
-    # RFC 4855 makes the names of media subtypes case-insensitive
     test "written in lower case still gets the stream parsed" do
       sdp = """
       v=0
@@ -48,7 +47,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
         {:set_up_tracks, [%{control_path: "trackID=0"}]}
       )
 
-      # the parser, not only the depayloader, is in place: it is what knows the resolution
       assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H264{
         alignment: :au,
         width: width,
@@ -79,8 +77,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       end
     end
 
-    # RFC 3551 assigns payload types 0-34 statically, so that a description does not
-    # have to carry an rtpmap for them (RFC 4566, section 6), and cameras leave it out
     test "without rtpmap for a static payload type is set up with the RFC 3551 mapping" do
       sdp = """
       v=0
@@ -114,7 +110,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
                }
              ] = Enum.sort_by(tracks, & &1.control_path)
 
-      # there is no depayloader for G.711, the RTP payload is passed on as it is
       assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: @pcma_packet})
       assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{})
 
@@ -122,7 +117,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
     end
 
-    # libavformat and live555 take the first format of the media line
     test "with several formats is set up for the first one, whatever the order of the attributes" do
       sdp = """
       v=0
@@ -149,7 +143,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
     end
 
-    # gortsplib "application without clock rate": metadata tracks come like this
     test "without rtpmap for a dynamic payload type is set up and passed on unparsed" do
       sdp = """
       v=0
@@ -183,8 +176,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert log =~ "The application media has no rtpmap for its payload type 107"
     end
 
-    # gortsplib#509, mediamtx#1267: the format is "smart/1/90000" and the payload type
-    # is only named by the rtpmap
     test "whose format is not a payload type is set up through the payload type of its rtpmap" do
       sdp = """
       v=0
@@ -217,9 +208,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
                ~s(The format "smart/1/90000" of the application media is not an RTP payload type)
     end
 
-    # The cameras of gortsplib#509 name payload type 95 there. Membrane.RTP.Demuxer
-    # takes payload types 64-95 for RTCP, so the packets of such a track would never
-    # be delivered; it is left out, with a warning, rather than set up to stay silent.
     test "with a payload type that cannot be told apart from RTCP is left out" do
       sdp = """
       v=0
@@ -255,8 +243,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert log =~ ~s(Leaving out the application track "trackID=3": payload type 95)
     end
 
-    # the transport that servers name for RTP interleaved on the RTSP connection;
-    # its formats are payload types like those of RTP/AVP
     test "with the transport RTP/AVP/TCP is set up by its format" do
       sdp = """
       v=0
@@ -278,8 +264,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
     end
 
-    # One demuxer serves all the tracks of a TCP connection and tells them apart by
-    # payload type; linking a second pad for the same one used to crash it.
     test "that uses the payload type of an earlier one is left out" do
       sdp = """
       v=0
@@ -315,8 +299,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert log =~ ~s(Leaving out the audio track "trackID=1": it uses payload type 96)
     end
 
-    # gortsplib#658, mediamtx#3668: the rtpmap is for one payload type and the only
-    # fmtp, which carries the config of that very stream, names another
     test "whose only fmtp names another payload type is set up with that fmtp" do
       sdp = """
       v=0
@@ -358,8 +340,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
                "The fmtp of the audio media is given for payload type 97, using it for payload type 104"
     end
 
-    # Over UDP every track has its own ports and demuxer, so tracks may share a payload
-    # type; servers built with GStreamer give 96 to every stream unless told otherwise.
     test "that shares its payload type with another one is received over UDP" do
       sdp = """
       v=0
@@ -393,7 +373,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
         :ok = :gen_udp.send(socket, ~c"localhost", String.to_integer(rtp_port), packet)
       end
 
-      # the video is taken for H264, not for the encoding of the other track
       assert_sink_stream_format(
         pipeline,
         {:sink, "trackID=0"},
@@ -476,8 +455,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       """
     end
 
-    # RFC 3640 writes the names in mixed case in its examples; libavformat reads the
-    # lengths and never looks at the mode
     test "without a mode is depayloaded according to sizelength and indexlength" do
       sdp =
         aac_sdp(
@@ -500,7 +477,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
     end
 
-    # the mode "generic" leaves the layout of the AU headers to the lengths
     test "with the mode generic is depayloaded according to sizelength and indexlength" do
       sdp =
         aac_sdp(
@@ -528,7 +504,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
 
       media = [
         aac_packet(0, aac_hbr_payload(@aac_frame)),
-        # declares more AU headers than the packet holds
         aac_packet(1, <<4000::16, 1, 2, 3>>),
         aac_packet(2, aac_hbr_payload(<<0x21, 0x99>>))
       ]
@@ -551,8 +526,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert log =~ "Dropping an RTP packet"
     end
 
-    # without them nothing can tell how the payload is laid out or what the decoder
-    # needs, so the payload is passed on untouched rather than guessed at
     for {description, fmtp_line} <- [
           {"without fmtp", "a=recvonly"},
           {"without a config", "a=fmtp:97 mode=AAC-hbr;sizelength=13;indexlength=3"},
@@ -582,9 +555,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
   end
 
   describe "H264 parameter sets in the description" do
-    # gortsplib "video h264 annexb" (gortsplib#402): the sets are base64 of the NAL
-    # units with their Annex B start code. The comment on a camera model that appends
-    # a start code was already in the source for H265.
     for {description, wrap} <- [
           {"that start with a start code", quote(do: fn set -> <<0, 0, 0, 1>> <> set end)},
           {"that end with a start code", quote(do: fn set -> set <> <<0, 0, 0, 1>> end)}
@@ -607,7 +577,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
         a=control:trackID=0
         """
 
-        # the stream itself carries no parameter sets, they are only in the description
         media =
           @h264
           |> MockCamera.h264_rtp_packets(payload_type: 96)
@@ -623,7 +592,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
         assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H264{width: width})
         assert is_integer(width)
         assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{payload: payload})
-        # the parser puts the sets from the description in front of the first keyframe
         assert payload =~ sps
         refute payload =~ <<0, 0, 0, 1, 0, 0, 0, 1>>
 
@@ -651,7 +619,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       a=control:trackID=0
       """
 
-      # the stream itself carries no parameter sets, they are only in the description
       media =
         @h265
         |> MockCamera.h265_rtp_packets(payload_type: 96)
@@ -676,8 +643,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       end)
     end
 
-    # gortsplib "video h264 with unparsable parameters" (mediamtx#2348); libavformat
-    # carries on with the parameter sets of the stream
     test "that cannot be parsed are left out and the stream is played with its own" do
       sdp = """
       v=0
@@ -701,7 +666,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
           assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
           Membrane.Testing.Pipeline.terminate(pipeline)
 
-          # nothing is lost, not even the first keyframe
           assert count_buffers(pipeline, {:sink, "trackID=0"}) == count_access_units()
         end)
 
@@ -720,8 +684,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
     a=control:trackID=0
     """
 
-    # RFC 2326 section 7.1.1 takes the classes of status codes from HTTP: every 2xx is
-    # a success, and a client treats one it does not know as it treats 200
     test "of the 2xx class other than 200 is a success" do
       script =
         MockCamera.script(@video_sdp, [], %{
@@ -775,8 +737,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       message
     end
 
-    # libavformat refuses such a reply; here it is only reported, since what a server
-    # writes in the header and what it does are not always the same
     test "200 for SETUP that names another transport than the one asked for is reported" do
       setup = fn _request ->
         MockCamera.response("RTSP/1.0 200 OK", [
@@ -857,7 +817,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       {camera, port} = start_camera(script)
       pipeline = CameraPipeline.start_supervised!(port, source_options)
       assert_receive {:mock_camera, :request, "PLAY", _request}, 2_000
-      # the OPTIONS request sent while connecting is not a keep-alive
       assert_received {:mock_camera, :request, "OPTIONS", _request}
       {camera, pipeline}
     end
@@ -870,8 +829,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert keep_alive_methods(2) == ["GET_PARAMETER", "GET_PARAMETER"]
     end
 
-    # libavformat, GStreamer and gortsplib all read the Public header of the reply to
-    # OPTIONS and keep the session alive with OPTIONS when GET_PARAMETER is not in it
     test "is OPTIONS when the server does not list GET_PARAMETER among its methods" do
       options = fn _request ->
         MockCamera.response("RTSP/1.0 200 OK", ["public: DESCRIBE , SETUP,PLAY, TEARDOWN,options"])
@@ -884,8 +841,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert Process.alive?(pipeline)
     end
 
-    # GStreamer names a camera that answers "551 Option not supported" for a method it
-    # advertised, and treats 405, 406, 501 and 551 alike
     test "falls back to OPTIONS when the server refuses the GET_PARAMETER it advertised" do
       refuse = fn _request -> MockCamera.response("RTSP/1.0 551 Option not supported") end
       script = MockCamera.script(@video_sdp, [], %{"GET_PARAMETER" => refuse})
@@ -927,8 +882,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       refute_received {:mock_camera, :request, "OPTIONS", %{headers: %{"session" => _session}}}
     end
 
-    # gortsplib tolerates 404 here ("not implemented by every RTSP server"), GStreamer
-    # 405, 406, 501 and 551
     test "works when the server refuses the OPTIONS request sent while connecting" do
       refused = fn request ->
         if request.headers["session"],
@@ -941,7 +894,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
           {_camera, pipeline} =
             start_playing(MockCamera.script(@video_sdp, [], %{"OPTIONS" => refused}), @fast)
 
-          # nothing is known about the server, so it is asked what it always was
           assert keep_alive_methods(2) == ["GET_PARAMETER", "GET_PARAMETER"]
           assert Process.alive?(pipeline)
         end)
@@ -949,8 +901,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert log =~ "OPTIONS was answered with status 405"
     end
 
-    # Going on to DESCRIBE would let a late answer to OPTIONS be taken for the answer
-    # to DESCRIBE, and libavformat does not use a server that fails OPTIONS either.
     test "is not attempted with a server that does not answer OPTIONS at all" do
       script = MockCamera.script(@video_sdp, [], %{"OPTIONS" => fn _request -> "" end})
       {_camera, port} = start_camera(script)
@@ -977,8 +927,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       refute_received {:mock_camera, :request, "DESCRIBE", _request}
     end
 
-    # RFC 2326 section 12.37: the server may close a session that it has not heard
-    # from for the timeout it announced. libavformat sends a request every half of it.
     test "is sent within the timeout that the server announces for the session" do
       setup = fn request ->
         MockCamera.response("RTSP/1.0 200 OK", [
@@ -991,15 +939,11 @@ defmodule Membrane.RTSP.CameraQuirksTest do
         keep_alive_interval: Membrane.Time.seconds(15)
       )
 
-      # half of the announced second, far from the 15 seconds that are configured
       assert_receive {:mock_camera, :request, "GET_PARAMETER", _request}, 3_000
     end
   end
 
   describe "request sent by the server" do
-    # RFC 2326 lets the server send OPTIONS, GET_PARAMETER and SET_PARAMETER to the
-    # client, and some servers check with them that the client is still there.
-    # libavformat and GStreamer answer them.
     test "between the RTP packets of an interleaved stream is answered and the stream goes on" do
       [first | rest] = h264_media(96)
       {second, rest} = Enum.split(rest, 20)
@@ -1007,7 +951,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       ping =
         "GET_PARAMETER rtsp://localhost/stream RTSP/1.0\r\nCSeq: 7\r\nSession: 12345678\r\n\r\n"
 
-      # the second request is cut in two between TCP segments
       {ping_start, ping_end} = String.split_at("OPTIONS * RTSP/1.0\r\nCSeq: 8\r\n\r\n", 12)
 
       media = [[first, ping, second, ping_start], [ping_end | rest]]
@@ -1023,7 +966,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       MockCamera.close_connection(camera)
       assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
 
-      # every access unit made it through, the requests cost nothing
       Membrane.Testing.Pipeline.terminate(pipeline)
       assert count_buffers(pipeline, {:sink, "trackID=0"}) == count_access_units()
     end
@@ -1049,8 +991,6 @@ defmodule Membrane.RTSP.CameraQuirksTest do
   end
 
   describe "User-Agent" do
-    # membrane_core#1205: a camera firmware answers 503 to requests that carry the
-    # default User-Agent and accepts them under another name
     test "can be set for servers that refuse the default one" do
       picky = fn request ->
         if request.headers["user-agent"] =~ "MembraneRTSP",

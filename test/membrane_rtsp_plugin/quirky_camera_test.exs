@@ -46,7 +46,6 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
 
   defp md5(data), do: data |> :erlang.md5() |> Base.encode16(case: :lower)
 
-  # Whether the request carries the Digest response for admin / p@ss
   defp authorized?(method, request) do
     with authorization when is_binary(authorization) <- request.headers["authorization"],
          [_match, response] <- Regex.run(~r/response="([0-9a-f]+)"/, authorization),
@@ -59,9 +58,6 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
     end
   end
 
-  # The challenge: Basic comes first, the Digest parameters are not all quoted, and the
-  # status line has no reason phrase. Header names are in lower case with no space
-  # after the colon.
   defp unauthorized() do
     "RTSP/1.0 401\r\ncseq:{CSEQ}\r\n" <>
       "www-authenticate:Basic realm=\"#{@realm}\"\r\n" <>
@@ -81,9 +77,7 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
         |> then(&MockCamera.interleaved(6, &1))
       end
 
-    # an RTCP sender report on the channel next to the video
     sender_report = MockCamera.interleaved(5, <<2::2, 0::6, 200, 6::16, 0x1234ABCD::32, 0::160>>)
-    # a frame with nothing in it and one too short to be RTP
     empty_frames = [MockCamera.interleaved(4, <<>>), MockCamera.interleaved(4, <<0x80>>)]
     ping = "OPTIONS rtsp://localhost/ RTSP/1.0\r\nCSeq: 1\r\n\r\n"
 
@@ -99,7 +93,6 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
           else: unauthorized()
 
       "OPTIONS", _request ->
-        # no GET_PARAMETER among the methods
         "RTSP/1.0 200 OK\r\nCSeq: {CSEQ}\r\nPublic:OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN\r\n\r\n"
     end
   end
@@ -107,18 +100,15 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
   defp reply("OPTIONS", _request, _base_url), do: MockCamera.response()
 
   defp reply("DESCRIBE", _request, base_url) do
-    # the content type has a parameter and odd case, the base is not the URL asked for
     "RTSP/1.0 200 OK\r\nCSeq: {CSEQ}\r\nContent-type: Application/SDP; charset=utf-8\r\n" <>
       "Content-Base: #{base_url}\r\nContent-length: #{byte_size(@sdp)}\r\n\r\n" <> @sdp
   end
 
   defp reply("SETUP", request, base_url) do
-    # only URLs built from Content-Base exist on this server
     if String.starts_with?(request.url, base_url) do
       [_match, first] = Regex.run(~r/interleaved=(\d+)/, request.headers["transport"])
       channel = String.to_integer(first) + 4
 
-      # other channels than asked for, a padded session id and a short timeout
       MockCamera.response("RTSP/1.0 200 OK", [
         "Session:  0a1b2c3d ; timeout=1",
         "Transport: RTP/AVP/TCP;unicast;interleaved=#{channel}-#{channel + 1};ssrc= 4317f;mode=\"PLAY\""
@@ -146,7 +136,6 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
   test "a stream is received in full from a server with many quirks at once" do
     test_process = self()
 
-    # the base URL holds the port of the server, which is only known once it listens
     camera =
       start_supervised!(%{
         id: :camera,
@@ -189,10 +178,8 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
                  %{control_path: "trackID=2", type: :application, rtpmap: nil}
                ] = Enum.sort_by(tracks, & &1.control_path)
 
-        # the request of the server in the middle of the stream is answered
         assert_receive {:mock_camera, :response, "RTSP/1.0 200 OK\r\nCSeq: 1"}, 2_000
 
-        # the session timeout of one second is honoured, with the method the server has
         assert_receive {:mock_camera, :request, "OPTIONS",
                         %{headers: %{"session" => "0a1b2c3d"}}},
                        3_000
@@ -204,19 +191,16 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
         assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
         Membrane.Testing.Pipeline.terminate(pipeline)
 
-        # the video comes out complete and parsed, the audio as the server sent it
         assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H264{alignment: :au})
         assert collect_payloads(pipeline, {:sink, "trackID=0"}) == @h264
         assert collect_payloads(pipeline, {:sink, "trackID=1"}) == String.duplicate(@pcma, 10)
       end)
 
-    # the control URLs were resolved against Content-Base after the first try failed
     assert_received {:mock_camera, :request, "SETUP", %{url: rejected}}
     assert rejected == "rtsp://localhost:#{port}/live/trackID=0"
     assert_received {:mock_camera, :request, "SETUP", %{url: accepted}}
     assert accepted == "rtsp://localhost:#{port}/media/video1/trackID=0"
 
-    # and nothing was tolerated silently
     for deviation <- [
           "o=RTSP Session 0 0 IN IP4 0.0.0.0",
           "b=X-AV:100",

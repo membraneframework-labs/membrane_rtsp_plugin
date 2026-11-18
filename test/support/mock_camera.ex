@@ -33,8 +33,6 @@ defmodule Membrane.RTSP.MockCamera do
   @spec close_connection(pid()) :: :ok
   def close_connection(camera), do: GenServer.call(camera, :close_connection)
 
-  # helpers to build what the camera sends
-
   @spec response(binary(), [binary()], binary()) :: binary()
   def response(status_line \\ "RTSP/1.0 200 OK", headers \\ [], body \\ "") do
     Enum.join([status_line, "CSeq: {CSEQ}" | headers], "\r\n") <> "\r\n\r\n" <> body

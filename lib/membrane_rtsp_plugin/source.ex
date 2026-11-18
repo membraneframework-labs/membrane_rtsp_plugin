@@ -266,8 +266,6 @@ defmodule Membrane.RTSP.Source do
      Enum.map(state.tracks, &Map.drop(&1, [:transport, :payload_type, :sdp_rtpmap?]))}
   end
 
-  # Only what the description says is handed to a demuxer. It resolves the static
-  # payload types on its own and passes the unknown ones on unparsed.
   @spec payload_type_mapping([ConnectionManager.track()]) ::
           Membrane.RTP.PayloadFormat.payload_type_mapping()
   defp payload_type_mapping(tracks) do
@@ -297,7 +295,6 @@ defmodule Membrane.RTSP.Source do
         [
           Enum.flat_map(state.tracks, fn track ->
             {:udp, rtp_port, rtcp_port} = track.transport
-            # each track has demuxers of its own, so two tracks may use one payload type
             payload_type_mapping = payload_type_mapping([track])
 
             [
@@ -332,8 +329,6 @@ defmodule Membrane.RTSP.Source do
   @spec encoding_name(String.t()) :: atom()
   defp encoding_name(encoding), do: Map.get(@encoding_names, String.downcase(encoding), :unknown)
 
-  # The encoding name of a track in lower case, since it is case-insensitive
-  # (RFC 4855, section 3), or `nil` when the description does not name it.
   @spec encoding(ConnectionManager.track()) :: String.t() | nil
   defp encoding(%{rtpmap: nil}), do: nil
   defp encoding(%{rtpmap: rtpmap}), do: String.downcase(rtpmap.encoding)
@@ -362,8 +357,6 @@ defmodule Membrane.RTSP.Source do
 
               nil
 
-            # a packet from the network that cannot be parsed costs that packet,
-            # not the stream
             mode ->
               %Membrane.RTP.AAC.Depayloader{mode: mode}
           end
@@ -379,13 +372,8 @@ defmodule Membrane.RTSP.Source do
     end
   end
 
-  # Tells how the AAC access units are laid out in the RTP payload (RFC 3640), or `nil`
-  # when the description does not say enough to depayload and parse them.
-  #
-  # The mode decides, as it always has. Descriptions that leave it out, or give the
-  # mode "generic", which leaves the layout to the lengths, are read by the lengths
-  # of the AU header fields, which is all libavformat looks at: 13 and 3 bits are
-  # those of AAC-hbr, 6 and 2 bits those of AAC-lbr.
+  # Without a mode, or with "generic", the lengths of the AU header fields decide:
+  # 13 and 3 bits are those of AAC-hbr, 6 and 2 bits those of AAC-lbr.
   @spec aac_mode(ConnectionManager.track()) :: Membrane.RTP.AAC.Utils.mode() | nil
   defp aac_mode(%{fmtp: %ExSDP.Attribute.FMTP{config: config} = fmtp}) when is_binary(config) do
     case fmtp do
@@ -402,9 +390,6 @@ defmodule Membrane.RTSP.Source do
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp parser(link_builder, track), do: parser(link_builder, track, encoding(track))
 
-  # The parameter sets of the description are given to the parsers as they come. A
-  # start code that some servers leave on them, and a set that cannot be parsed, are
-  # the parsers' to deal with.
   defp parser(link_builder, track, "h264") do
     sps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
     pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
@@ -426,7 +411,6 @@ defmodule Membrane.RTSP.Source do
   end
 
   defp parser(link_builder, %{type: :audio} = track, "mpeg4-generic") do
-    # no parser without a depayloader in front of it, see depayloader/2
     if aac_mode(track) do
       child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
         audio_specific_config: track.fmtp.config
