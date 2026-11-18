@@ -222,6 +222,7 @@ defmodule Membrane.RTSP.QuirkyCameraTest do
           "b=X-AV:100",
           "t=0 0",
           "framerate:25fps",
+          "no rtpmap for its payload type 107",
           "rejected with status 404",
           "malformed RTP packet"
         ] do

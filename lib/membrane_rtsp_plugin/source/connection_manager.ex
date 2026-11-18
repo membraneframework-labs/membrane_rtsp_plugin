@@ -261,6 +261,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
         {:ok, %RTSP.Response{status: status} = response} when status in 200..299 ->
+          warn_unless_interleaved(response, track)
           track = %{track | transport: {:tcp, socket}}
           {:cont, {:ok, [track | set_up_tracks], [response | responses]}}
 
@@ -275,6 +276,25 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
            {:error, {:setting_up_rtsp_connection_failed, describe_failure(request, error)}}}
       end
     end)
+  end
+
+  # The server names the transport it has chosen in its reply. When that is not the
+  # interleaved one that was asked for, no media will arrive on the connection, and
+  # nothing else would say why. The reply is not refused: what a server writes there
+  # and what it does are not always the same.
+  @spec warn_unless_interleaved(RTSP.Response.t(), track()) :: :ok
+  defp warn_unless_interleaved(response, track) do
+    with {:ok, transport} <- RTSP.Response.get_header(response, "Transport"),
+         downcased = String.downcase(transport),
+         false <- String.contains?(downcased, "tcp") or String.contains?(downcased, "interleaved") do
+      Membrane.Logger.warning(
+        "The server answered the request for interleaved transport of the track " <>
+          "#{inspect(track.control_path)} with Transport: #{transport}. " <>
+          "If no media arrives, it is sending the media another way."
+      )
+    else
+      _interleaved_or_not_stated -> :ok
+    end
   end
 
   @spec setup_rtsp_connection_with_udp(
@@ -542,6 +562,11 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
       nil when payload_type >= 96 ->
         # nothing says what the payload is, so it can only be passed on as it comes
+        Membrane.Logger.warning(
+          "The #{media.type} media has no rtpmap for its payload type #{payload_type}, " <>
+            "its RTP payload will be passed on as it comes"
+        )
+
         {:ok, payload_type, nil, false}
 
       nil ->
