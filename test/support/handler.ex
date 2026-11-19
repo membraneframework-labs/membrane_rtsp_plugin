@@ -69,7 +69,7 @@ defmodule Membrane.RTSP.RequestHandler do
   end
 
   @impl true
-  def handle_setup(_req, state), do: {Response.new(200), state}
+  def handle_setup(_req, _mode, state), do: {Response.new(200), state}
 
   @impl true
   def handle_play(configured_media_context, state) do

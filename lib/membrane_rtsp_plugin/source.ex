@@ -17,6 +17,20 @@ defmodule Membrane.RTSP.Source do
   When the element finishes setting up all tracks it will send a `t:set_up_tracks/0` notification.
   To receive a track a corresponding `Pad.ref(:output, control_path)` pad has to be connected,
   where each track's control path is provided in the `t:set_up_tracks/0` notification.
+
+  ## Servers that deviate from the specifications
+
+  RTSP servers, those in IP cameras in particular, often deviate from the RFCs in ways
+  that do not prevent other clients from playing their streams. The source accepts such
+  deviations where it can do so without guessing, and logs a warning for each of them.
+  When a track is described too poorly to be depayloaded (for example an AAC track
+  without a `config`), its RTP payload is sent on as it comes, like the payload of a codec
+  the source does not know. A track for which the description names no usable payload
+  type is left out of the `t:set_up_tracks/0` notification.
+
+  The `rtpmap` of a track is `nil` when the description has none and the payload type is
+  dynamic. For the static payload types of RFC 3551, such as 0 (PCMU) and 8 (PCMA), the
+  mapping that the RFC defines is reported.
   """
 
   use Membrane.Bin
@@ -71,7 +85,17 @@ defmodule Membrane.RTSP.Source do
                 default_inspector: &Time.pretty_duration/1,
                 description: """
                 Interval of a heartbeat sent to the RTSP server at a regular interval to
-                keep the session alive.
+                keep the session alive. If the server announces a session timeout that
+                is shorter than twice this interval, the heartbeat is sent every half of
+                that timeout instead.
+                """
+              ],
+              user_agent: [
+                spec: binary() | nil,
+                default: nil,
+                description: """
+                Value of the `User-Agent` header sent with every request, for servers that
+                treat clients differently by name. By default it is the one of `Membrane.RTSP`.
                 """
               ],
               on_connection_closed: [
@@ -99,7 +123,10 @@ defmodule Membrane.RTSP.Source do
             tracks: [ConnectionManager.track()],
             rtsp_session: Membrane.RTSP.t() | nil,
             keep_alive_timer: reference() | nil,
+            keep_alive_method: :get_parameter | :options,
+            session_timeout: pos_integer() | nil,
             on_connection_closed: :raise_error | :send_eos,
+            user_agent: binary() | nil,
             end_of_stream: boolean(),
             play_request_sent: boolean()
           }
@@ -117,7 +144,10 @@ defmodule Membrane.RTSP.Source do
                   tracks: [],
                   ssrc_to_track: %{},
                   rtsp_session: nil,
+                  user_agent: nil,
                   keep_alive_timer: nil,
+                  keep_alive_method: :get_parameter,
+                  session_timeout: nil,
                   end_of_stream: false,
                   play_request_sent: false
                 ]
@@ -213,9 +243,9 @@ defmodule Membrane.RTSP.Source do
       get_child(demuxer_name)
       |> via_out(:output,
         options: [
-          stream_id: {:payload_type, track.rtpmap.payload_type},
+          stream_id: {:payload_type, track.payload_type},
           jitter_buffer_latency: jitter_buffer_latency,
-          clock_rate: track.rtpmap.clock_rate
+          clock_rate: track.rtpmap && track.rtpmap.clock_rate
         ]
       )
       |> depayloader(track)
@@ -232,20 +262,21 @@ defmodule Membrane.RTSP.Source do
 
   @spec get_set_up_tracks_notification(State.t()) :: set_up_tracks_notification()
   defp get_set_up_tracks_notification(state) do
-    {:set_up_tracks, Enum.map(state.tracks, &Map.delete(&1, :transport))}
+    {:set_up_tracks,
+     Enum.map(state.tracks, &Map.drop(&1, [:transport, :payload_type, :sdp_rtpmap?]))}
+  end
+
+  @spec payload_type_mapping([ConnectionManager.track()]) ::
+          Membrane.RTP.PayloadFormat.payload_type_mapping()
+  defp payload_type_mapping(tracks) do
+    for %{sdp_rtpmap?: true, rtpmap: rtpmap, payload_type: payload_type} <- tracks, into: %{} do
+      {payload_type,
+       %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
+    end
   end
 
   @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
   defp create_sources_spec(state) do
-    payload_type_mapping =
-      Map.new(
-        state.tracks,
-        fn %{rtpmap: rtpmap} ->
-          {rtpmap.payload_type,
-           %{encoding_name: String.to_atom(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
-        end
-      )
-
     case state.transport do
       :tcp ->
         {:tcp, socket} = List.first(state.tracks).transport
@@ -256,12 +287,15 @@ defmodule Membrane.RTSP.Source do
           on_connection_closed: state.on_connection_closed
         })
         |> child(:tcp_decapsulator, %RTSP.TCP.Decapsulator{rtsp_session: state.rtsp_session})
-        |> child(:rtp_demuxer, %Membrane.RTP.Demuxer{payload_type_mapping: payload_type_mapping})
+        |> child(:rtp_demuxer, %Membrane.RTP.Demuxer{
+          payload_type_mapping: payload_type_mapping(state.tracks)
+        })
 
       {:udp, _port_range_start, _port_range_end} ->
         [
           Enum.flat_map(state.tracks, fn track ->
             {:udp, rtp_port, rtcp_port} = track.transport
+            payload_type_mapping = payload_type_mapping([track])
 
             [
               child({:udp_source, rtp_port}, %Membrane.UDP.Source{local_port_no: rtp_port})
@@ -280,10 +314,29 @@ defmodule Membrane.RTSP.Source do
     end
   end
 
+  # Encoding names known to `Membrane.RTP.Demuxer`, which uses them to describe the
+  # stream it outputs. The name comes from the server, so it is looked up here instead
+  # of being turned into an atom, and compared case-insensitively (RFC 4855, section 3).
+  @encoding_names %{
+    "h264" => :H264,
+    "h265" => :H265,
+    "vp8" => :VP8,
+    "aac" => :AAC,
+    "opus" => :opus,
+    "mpa" => :MPA
+  }
+
+  @spec encoding_name(String.t()) :: atom()
+  defp encoding_name(encoding), do: Map.get(@encoding_names, String.downcase(encoding), :unknown)
+
+  @spec encoding(ConnectionManager.track()) :: String.t() | nil
+  defp encoding(%{rtpmap: nil}), do: nil
+  defp encoding(%{rtpmap: rtpmap}), do: String.downcase(rtpmap.encoding)
+
   @spec depayloader(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
   defp depayloader(builder, track) do
     depayloader_definition =
-      case {track.type, String.downcase(track.rtpmap.encoding)} do
+      case {track.type, encoding(track)} do
         {_type, "h264"} ->
           Membrane.RTP.H264.Depayloader
 
@@ -294,13 +347,19 @@ defmodule Membrane.RTSP.Source do
           Membrane.RTP.Opus.Depayloader
 
         {:audio, "mpeg4-generic"} ->
-          mode =
-            case track.fmtp do
-              %{mode: :AAC_hbr} -> :hbr
-              %{mode: :AAC_lbr} -> :lbr
-            end
+          case aac_mode(track) do
+            nil ->
+              Membrane.Logger.warning("""
+              Cannot depayload the AAC track #{inspect(track.control_path)}: its fmtp has to \
+              give the config and either the mode or sizelength and indexlength, got \
+              #{inspect(track.fmtp)}. Passing the RTP payload on as it is.
+              """)
 
-          %Membrane.RTP.AAC.Depayloader{mode: mode}
+              nil
+
+            mode ->
+              %Membrane.RTP.AAC.Depayloader{mode: mode}
+          end
 
         {_type, _encoding} ->
           nil
@@ -313,10 +372,27 @@ defmodule Membrane.RTSP.Source do
     end
   end
 
+  # Without a mode, or with "generic", the lengths of the AU header fields decide:
+  # 13 and 3 bits are those of AAC-hbr, 6 and 2 bits those of AAC-lbr.
+  @spec aac_mode(ConnectionManager.track()) :: Membrane.RTP.AAC.Utils.mode() | nil
+  defp aac_mode(%{fmtp: %ExSDP.Attribute.FMTP{config: config} = fmtp}) when is_binary(config) do
+    case fmtp do
+      %{mode: :AAC_hbr} -> :hbr
+      %{mode: :AAC_lbr} -> :lbr
+      %{mode: mode, sizelength: 13, indexlength: 3} when mode in [nil, :generic] -> :hbr
+      %{mode: mode, sizelength: 6, indexlength: 2} when mode in [nil, :generic] -> :lbr
+      _other -> nil
+    end
+  end
+
+  defp aac_mode(_track), do: nil
+
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
-  defp parser(link_builder, %{rtpmap: %{encoding: "H264"}} = track) do
-    sps = track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
-    pps = track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
+  defp parser(link_builder, track), do: parser(link_builder, track, encoding(track))
+
+  defp parser(link_builder, track, "h264") do
+    sps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.sps
+    pps = track.fmtp && track.fmtp.sprop_parameter_sets && track.fmtp.sprop_parameter_sets.pps
 
     child(link_builder, {:parser, make_ref()}, %Membrane.H264.Parser{
       spss: List.wrap(sps),
@@ -325,30 +401,24 @@ defmodule Membrane.RTSP.Source do
     })
   end
 
-  defp parser(link_builder, %{rtpmap: %{encoding: "H265"}} = track) do
+  defp parser(link_builder, track, "h265") do
     child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
-      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps) |> Enum.map(&clean_parameter_set/1),
-      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
-      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
+      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps),
+      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps),
+      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps),
       repeat_parameter_sets: true
     })
   end
 
-  defp parser(link_builder, %{type: :audio, rtpmap: %{encoding: "mpeg4-generic"}} = track) do
-    child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
-      audio_specific_config: track.fmtp.config
-    })
-  end
-
-  defp parser(link_builder, _track), do: link_builder
-
-  # a strange issue with one of Milesight camera where the parameter sets has
-  # <<0, 0, 0, 1>> at the end
-  @spec clean_parameter_set(binary()) :: binary()
-  defp clean_parameter_set(ps) do
-    case :binary.part(ps, byte_size(ps), -4) do
-      <<0, 0, 0, 1>> -> :binary.part(ps, 0, byte_size(ps) - 4)
-      _other -> ps
+  defp parser(link_builder, %{type: :audio} = track, "mpeg4-generic") do
+    if aac_mode(track) do
+      child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
+        audio_specific_config: track.fmtp.config
+      })
+    else
+      link_builder
     end
   end
+
+  defp parser(link_builder, _track, _encoding), do: link_builder
 end

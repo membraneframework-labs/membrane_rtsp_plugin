@@ -81,4 +81,53 @@ defmodule Membrane.RTSP.DecapsulatorTest do
       perform_standard_test(rtp_packets_lengths, tcp_segments_lengths)
     end
   end
+
+  describe "RTSP Decapsulator keeps the packets in order" do
+    test "when an RTSP response ends the tcp segment that they came in" do
+      packets = for n <- 1..3, do: <<n, n, n>>
+      response = "RTSP/1.0 200 OK\r\nCSeq: 5\r\n\r\n"
+      tcp_segment = Enum.join(encapsulate_rtp_packets(packets)) <> response
+
+      pipeline =
+        Pipeline.start_link_supervised!(
+          spec:
+            child(:source, %Source{output: [tcp_segment]})
+            |> child(:decapsulator, %Decapsulator{rtsp_session: self()})
+            |> child(:sink, Sink)
+        )
+
+      for packet <- packets do
+        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: payload})
+        assert payload == packet
+      end
+
+      assert_receive {:raw_response, ^response}
+      Pipeline.terminate(pipeline)
+    end
+  end
+
+  describe "RTSP Decapsulator passes a request of the server to the session" do
+    test "wherever the tcp segments cut it" do
+      request = "GET_PARAMETER rtsp://localhost/stream RTSP/1.0\r\nCSeq: 7\r\n\r\n"
+      packet = <<1, 2, 3>>
+      [frame] = encapsulate_rtp_packets([packet])
+
+      for cut <- 1..(byte_size(request) - 1) do
+        {request_start, request_end} = String.split_at(request, cut)
+
+        pipeline =
+          Pipeline.start_link_supervised!(
+            spec:
+              child(:source, %Source{output: [frame <> request_start, request_end <> frame]})
+              |> child(:decapsulator, %Decapsulator{rtsp_session: self()})
+              |> child(:sink, Sink)
+          )
+
+        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+        assert_receive {:raw_response, ^request}
+        Pipeline.terminate(pipeline)
+      end
+    end
+  end
 end
