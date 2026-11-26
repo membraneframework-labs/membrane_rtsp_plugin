@@ -50,11 +50,11 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     Membrane.Logger.debug("ConnectionManager: Setting RTSP on play mode")
 
     case RTSP.play(state.rtsp_session) do
-      {:ok, %{status: 200}} ->
+      {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
         %{state | keep_alive_timer: start_keep_alive_timer(state), play_request_sent: true}
 
-      _error ->
-        handle_rtsp_error(:play_rtsp_failed, state)
+      result ->
+        handle_rtsp_error({:play_rtsp_failed, describe_failure("PLAY", result)}, state)
     end
   end
 
@@ -95,12 +95,18 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     Membrane.Logger.debug("ConnectionManager: Getting RTSP description")
 
     case RTSP.describe(rtsp_session, @content_type_header) do
-      {:ok, %{status: 200} = response} ->
+      {:ok, %RTSP.Response{status: status, body: %ExSDP{}} = response}
+      when status in 200..299 ->
         tracks = get_tracks(response, state.allowed_media_types)
         {:ok, %{state | tracks: tracks}}
 
-      _result ->
-        {:error, :getting_rtsp_description_failed, state}
+      {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
+        {:error,
+         {:getting_rtsp_description_failed,
+          "the reply to DESCRIBE carried no session description"}, state}
+
+      result ->
+        {:error, {:getting_rtsp_description_failed, describe_failure("DESCRIBE", result)}, state}
     end
   end
 
@@ -136,7 +142,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
         [{"Transport", "RTP/AVP/TCP;unicast;interleaved=#{idx * 2}-#{idx * 2 + 1}"}]
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
-        {:ok, %{status: 200}} ->
+        {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
           {:cont, {:ok, [%{track | transport: {:tcp, socket}} | set_up_tracks]}}
 
         error ->
@@ -144,7 +150,10 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
             "ConnectionManager: Setting up RTSP connection failed: #{inspect(error)}"
           )
 
-          {:halt, {:error, :setting_up_rtsp_connection_failed}}
+          request = "SETUP of #{inspect(track.control_path)}"
+
+          {:halt,
+           {:error, {:setting_up_rtsp_connection_failed, describe_failure(request, error)}}}
       end
     end)
   end
@@ -181,7 +190,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
       [track | rest_tracks] = tracks
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
-        {:ok, %{status: 200}} ->
+        {:ok, %RTSP.Response{status: status}} when status in 200..299 ->
           set_up_tracks = [%{track | transport: {:udp, port, port + 1}} | set_up_tracks]
 
           setup_rtsp_connection_with_udp(
@@ -192,8 +201,9 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
             set_up_tracks
           )
 
-        _other ->
-          {:error, :setup_failed}
+        other ->
+          request = "SETUP of #{inspect(track.control_path)}"
+          {:error, {:setup_failed, describe_failure(request, other)}}
       end
     end
   end
@@ -210,12 +220,25 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     end
   end
 
+  @spec describe_failure(String.t(), RTSP.Response.result()) :: String.t()
+  defp describe_failure(request, {:ok, %RTSP.Response{status: status}}),
+    do: "#{request} was answered with status #{status}"
+
+  defp describe_failure(request, {:error, reason}),
+    do: "#{request} failed with #{inspect(reason)}"
+
   @spec handle_rtsp_error(term(), State.t()) :: no_return()
   defp handle_rtsp_error(reason, state) do
-    Membrane.Logger.error("could not connect to RTSP server due to: #{inspect(reason)}")
+    message =
+      case reason do
+        {reason, description} when is_binary(description) -> "#{inspect(reason)} (#{description})"
+        reason -> inspect(reason)
+      end
+
+    Membrane.Logger.error("could not connect to RTSP server due to: #{message}")
     if state.rtsp_session != nil, do: RTSP.close(state.rtsp_session)
 
-    raise "RTSP connection failed, reason: #{inspect(reason)}"
+    raise "RTSP connection failed, reason: #{message}"
   end
 
   @spec get_tracks(RTSP.Response.t(), media_types()) :: [track()]

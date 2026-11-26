@@ -88,7 +88,8 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
                  fn -> ConnectionManager.establish_connection(supervisor, state) end
 
     assert_raise RuntimeError,
-                 "RTSP connection failed, reason: :getting_rtsp_description_failed",
+                 "RTSP connection failed, reason: :getting_rtsp_description_failed " <>
+                   "(DESCRIBE was answered with status 404)",
                  fn -> ConnectionManager.establish_connection(supervisor, state) end
   end
 end
