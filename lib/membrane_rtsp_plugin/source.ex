@@ -262,8 +262,6 @@ defmodule Membrane.RTSP.Source do
 
   @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
   defp create_sources_spec(state) do
-    payload_type_mapping = payload_type_mapping(state.tracks)
-
     case state.transport do
       :tcp ->
         {:tcp, socket} = List.first(state.tracks).transport
@@ -274,12 +272,15 @@ defmodule Membrane.RTSP.Source do
           on_connection_closed: state.on_connection_closed
         })
         |> child(:tcp_decapsulator, %RTSP.TCP.Decapsulator{rtsp_session: state.rtsp_session})
-        |> child(:rtp_demuxer, %Membrane.RTP.Demuxer{payload_type_mapping: payload_type_mapping})
+        |> child(:rtp_demuxer, %Membrane.RTP.Demuxer{
+          payload_type_mapping: payload_type_mapping(state.tracks)
+        })
 
       {:udp, _port_range_start, _port_range_end} ->
         [
           Enum.flat_map(state.tracks, fn track ->
             {:udp, rtp_port, rtcp_port} = track.transport
+            payload_type_mapping = payload_type_mapping([track])
 
             [
               child({:udp_source, rtp_port}, %Membrane.UDP.Source{local_port_no: rtp_port})

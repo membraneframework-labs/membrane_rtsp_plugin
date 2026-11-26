@@ -76,18 +76,20 @@ defmodule Membrane.RTSP.MockCamera do
 
   @spec h264_rtp_packets(binary(), keyword()) :: [binary()]
   def h264_rtp_packets(annexb, opts) do
+    {max_payload_size, opts} = Keyword.pop(opts, :max_payload_size, :infinity)
+
     nalus =
       annexb
       |> :binary.split(<<0, 0, 0, 1>>, [:global])
       |> Enum.reject(fn nalu -> nalu == <<>> end)
 
     {payloads, _acc} =
-      Enum.map_reduce(nalus, {0, false}, fn nalu, {timestamp, after_vcl?} ->
+      Enum.flat_map_reduce(nalus, {0, false}, fn nalu, {timestamp, after_vcl?} ->
         <<_header::3, type::5, _rest::binary>> = nalu
         vcl? = type in [1, 5]
         timestamp = if after_vcl? and not vcl?, do: timestamp + 3000, else: timestamp
 
-        {{nalu, timestamp}, {timestamp, vcl?}}
+        {Enum.map(fragment(nalu, max_payload_size), &{&1, timestamp}), {timestamp, vcl?}}
       end)
 
     payloads
@@ -95,6 +97,29 @@ defmodule Membrane.RTSP.MockCamera do
     |> Enum.map(fn {{payload, timestamp}, sequence_number} ->
       rtp_packet(payload, opts ++ [sequence_number: sequence_number, timestamp: timestamp])
     end)
+  end
+
+  # FU-A fragments of a NAL unit that does not fit (RFC 6184, section 5.8)
+  defp fragment(nalu, max_payload_size) when byte_size(nalu) <= max_payload_size, do: [nalu]
+
+  defp fragment(<<forbidden::1, nri::2, type::5, body::binary>>, max_payload_size) do
+    chunks = chunks(body, max_payload_size - 2)
+    last = length(chunks) - 1
+
+    chunks
+    |> Enum.with_index()
+    |> Enum.map(fn {chunk, index} ->
+      start_bit = if index == 0, do: 1, else: 0
+      end_bit = if index == last, do: 1, else: 0
+      <<forbidden::1, nri::2, 28::5, start_bit::1, end_bit::1, 0::1, type::5, chunk::binary>>
+    end)
+  end
+
+  defp chunks(binary, size) when byte_size(binary) <= size, do: [binary]
+
+  defp chunks(binary, size) do
+    {chunk, rest} = :erlang.split_binary(binary, size)
+    [chunk | chunks(rest, size)]
   end
 
   @impl true
