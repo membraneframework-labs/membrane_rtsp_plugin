@@ -607,6 +607,157 @@ defmodule Membrane.RTSP.CameraQuirksTest do
     end
   end
 
+  describe "H264 parameter sets in the description" do
+    defp assert_h264_played_with_sets_from_description(wrap_set) do
+      [sps, pps | _rest] =
+        :binary.split(@h264, <<0, 0, 0, 1>>, [:global])
+        |> Enum.reject(fn nalu -> nalu == "" end)
+
+      sprop = Enum.map_join([sps, pps], ",", fn set -> Base.encode64(wrap_set.(set)) end)
+
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H264/90000
+      a=fmtp:96 packetization-mode=1;sprop-parameter-sets=#{sprop}
+      a=control:trackID=0
+      """
+
+      media =
+        @h264
+        |> MockCamera.h264_rtp_packets(payload_type: 96)
+        |> Enum.reject(fn <<_rtp_header::binary-size(12), _nal_header::3, type::5, _rest::binary>> ->
+          type in [7, 8]
+        end)
+        |> Enum.map(&MockCamera.interleaved(0, &1))
+
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H264{width: width})
+      assert is_integer(width)
+      assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{payload: payload})
+      assert payload =~ sps
+      refute payload =~ <<0, 0, 0, 1, 0, 0, 0, 1>>
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+    end
+
+    test "that start with a start code are used without it" do
+      assert_h264_played_with_sets_from_description(fn set -> <<0, 0, 0, 1>> <> set end)
+    end
+
+    test "that end with a start code are used without it" do
+      assert_h264_played_with_sets_from_description(fn set -> set <> <<0, 0, 0, 1>> end)
+    end
+  end
+
+  describe "parameter sets in the description" do
+    @h265 File.read!("test/fixtures/in.hevc")
+
+    test "of H265 that carry start codes are used without them" do
+      [vps, sps, pps | _rest] =
+        :binary.split(@h265, <<0, 0, 0, 1>>, [:global]) |> Enum.reject(fn nalu -> nalu == "" end)
+
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H265/90000
+      a=fmtp:96 sprop-vps=#{Base.encode64(<<0, 0, 0, 1>> <> vps)};sprop-sps=#{Base.encode64(sps <> <<0, 0, 1>>)};sprop-pps=#{Base.encode64(<<0, 0, 1>> <> pps <> <<0, 0, 0, 1>>)}
+      a=control:trackID=0
+      """
+
+      media =
+        @h265
+        |> MockCamera.h265_rtp_packets(payload_type: 96)
+        |> Enum.reject(fn <<_rtp_header::binary-size(12), _forbidden::1, type::6,
+                            _rest::bitstring>> ->
+          type in 32..34
+        end)
+        |> Enum.map(&MockCamera.interleaved(0, &1))
+
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        pipeline = CameraPipeline.start_supervised!(port)
+
+        assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H265{width: width})
+        assert is_integer(width)
+        assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{payload: payload})
+        assert payload =~ sps
+
+        MockCamera.close_connection(camera)
+        assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+      end)
+    end
+
+    test "of H265 that are shorter than a start code do not stop the source" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H265/90000
+      a=fmtp:96 sprop-vps=#{Base.encode64(<<0x40>>)}
+      a=control:trackID=0
+      """
+
+      media =
+        @h265
+        |> MockCamera.h265_rtp_packets(payload_type: 96)
+        |> Enum.map(&MockCamera.interleaved(0, &1))
+
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        pipeline = CameraPipeline.start_supervised!(port)
+
+        assert_sink_stream_format(pipeline, {:sink, "trackID=0"}, %Membrane.H265{})
+        assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{})
+
+        MockCamera.close_connection(camera)
+        assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+      end)
+    end
+
+    test "that cannot be parsed are left out and the stream is played with its own" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H264/90000
+      a=fmtp:96 packetization-mode=1;sprop-parameter-sets=#{Base.encode64(<<0x67, 1, 2>>)},#{Base.encode64(<<0x68>>)}
+      a=control:trackID=0
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, h264_media(96)))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+          assert_receive {:mock_camera, :request, "PLAY", _request}, 2_000
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+          Membrane.Testing.Pipeline.terminate(pipeline)
+
+          assert count_buffers(pipeline, {:sink, "trackID=0"}) == count_access_units()
+        end)
+
+      assert log =~ ~r/Ignoring a [sp]ps NALu that cannot be parsed/
+    end
+  end
+
   describe "status code" do
     @video_sdp """
     v=0

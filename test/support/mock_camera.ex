@@ -122,6 +122,26 @@ defmodule Membrane.RTSP.MockCamera do
     [chunk | chunks(rest, size)]
   end
 
+  @spec h265_rtp_packets(binary(), keyword()) :: [binary()]
+  def h265_rtp_packets(annexb, opts) do
+    nalus =
+      annexb
+      |> :binary.split(<<0, 0, 0, 1>>, [:global])
+      |> Enum.reject(fn nalu -> nalu == <<>> end)
+
+    {packets, _acc} =
+      Enum.map_reduce(nalus, {0, 0}, fn nalu, {sequence_number, timestamp} ->
+        <<_forbidden::1, type::6, _rest::bitstring>> = nalu
+
+        packet =
+          rtp_packet(nalu, opts ++ [sequence_number: sequence_number, timestamp: timestamp])
+
+        {packet, {sequence_number + 1, if(type < 32, do: timestamp + 3000, else: timestamp)}}
+      end)
+
+    packets
+  end
+
   @impl true
   def init({script, owner}) do
     {:ok, listen_socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])

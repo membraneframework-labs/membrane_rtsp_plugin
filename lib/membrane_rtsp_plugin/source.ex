@@ -440,9 +440,9 @@ defmodule Membrane.RTSP.Source do
 
   defp parser(link_builder, track, "h265") do
     child(link_builder, {:parser, make_ref()}, %Membrane.H265.Parser{
-      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps) |> Enum.map(&clean_parameter_set/1),
-      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps) |> Enum.map(&clean_parameter_set/1),
-      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps) |> Enum.map(&clean_parameter_set/1),
+      vpss: List.wrap(track.fmtp && track.fmtp.sprop_vps),
+      spss: List.wrap(track.fmtp && track.fmtp.sprop_sps),
+      ppss: List.wrap(track.fmtp && track.fmtp.sprop_pps),
       repeat_parameter_sets: true
     })
   end
@@ -460,14 +460,4 @@ defmodule Membrane.RTSP.Source do
   end
 
   defp parser(link_builder, _track, _encoding), do: link_builder
-
-  # a strange issue with one of Milesight camera where the parameter sets has
-  # <<0, 0, 0, 1>> at the end
-  @spec clean_parameter_set(binary()) :: binary()
-  defp clean_parameter_set(ps) do
-    case :binary.part(ps, byte_size(ps), -4) do
-      <<0, 0, 0, 1>> -> :binary.part(ps, 0, byte_size(ps) - 4)
-      _other -> ps
-    end
-  end
 end
