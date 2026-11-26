@@ -22,6 +22,8 @@ defmodule Membrane.RTSP.Source do
 
   The source accepts some deviations from the RFCs and logs a warning for each of them:
 
+  * a track that cannot be depayloaded (for example an AAC track without a `config`) has
+    its RTP payload sent on as it comes, like a track of an unknown codec,
   * a track without a usable payload type is left out of the `t:set_up_tracks/0` notification,
   * the `rtpmap` of a track is `nil` when the description has none and the payload type
     is dynamic. For the static payload types of RFC 3551 the mapping from the RFC is reported.
@@ -329,13 +331,7 @@ defmodule Membrane.RTSP.Source do
           Membrane.RTP.Opus.Depayloader
 
         {:audio, "mpeg4-generic"} ->
-          mode =
-            case track.fmtp do
-              %{mode: :AAC_hbr} -> :hbr
-              %{mode: :AAC_lbr} -> :lbr
-            end
-
-          %Membrane.RTP.AAC.Depayloader{mode: mode}
+          aac_depayloader(track)
 
         {_type, _encoding} ->
           nil
@@ -346,6 +342,66 @@ defmodule Membrane.RTSP.Source do
     else
       builder
     end
+  end
+
+  @spec aac_depayloader(ConnectionManager.track()) :: struct() | nil
+  defp aac_depayloader(track) do
+    case aac_mode(track) do
+      nil ->
+        Membrane.Logger.warning("""
+        Cannot depayload the AAC track #{inspect(track.control_path)}: its fmtp has to \
+        give the config and either the mode AAC-hbr or AAC-lbr or the AU header fields \
+        of one of them, got #{inspect(track.fmtp)}. Passing the RTP payload on as it is.
+        """)
+
+        nil
+
+      mode ->
+        if track.fmtp.mode == nil or track.fmtp.indexdeltalength != track.fmtp.indexlength do
+          Membrane.Logger.warning(
+            "The fmtp of the AAC track #{inspect(track.control_path)} gives no mode or no " <>
+              "matching indexdeltalength, depayloading it in the mode #{inspect(mode)}"
+          )
+        end
+
+        %Membrane.RTP.AAC.Depayloader{mode: mode}
+    end
+  end
+
+  # sizeLength and indexLength of AAC-hbr and AAC-lbr (RFC 3640, sections 3.3.6 and 3.3.5).
+  # indexDeltaLength equals indexLength in both modes.
+  @aac_au_header_lengths %{{13, 3} => :hbr, {6, 2} => :lbr}
+
+  @fmtp_fields_unused_by_aac_modes [
+    :ctsdeltalength,
+    :dtsdeltalength,
+    :randomaccessindication,
+    :streamstateindication,
+    :auxillarydatasizelength
+  ]
+
+  @spec aac_mode(ConnectionManager.track()) :: Membrane.RTP.AAC.Utils.mode() | nil
+  defp aac_mode(%{fmtp: %ExSDP.Attribute.FMTP{config: config} = fmtp}) when is_binary(config) do
+    case fmtp do
+      %{mode: :AAC_hbr} -> :hbr
+      %{mode: :AAC_lbr} -> :lbr
+      %{mode: mode} when mode in [nil, :generic] -> aac_mode_of_au_header(fmtp)
+      _other -> nil
+    end
+  end
+
+  defp aac_mode(_track), do: nil
+
+  @spec aac_mode_of_au_header(ExSDP.Attribute.FMTP.t()) :: Membrane.RTP.AAC.Utils.mode() | nil
+  defp aac_mode_of_au_header(fmtp) do
+    lengths = {fmtp.sizelength, fmtp.indexlength}
+
+    other_fields_unused? =
+      Enum.all?(@fmtp_fields_unused_by_aac_modes, fn field ->
+        Map.fetch!(fmtp, field) in [nil, 0, false]
+      end)
+
+    if other_fields_unused?, do: Map.get(@aac_au_header_lengths, lengths)
   end
 
   @spec parser(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()
@@ -372,9 +428,13 @@ defmodule Membrane.RTSP.Source do
   end
 
   defp parser(link_builder, %{type: :audio} = track, "mpeg4-generic") do
-    child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
-      audio_specific_config: track.fmtp.config
-    })
+    if aac_mode(track) do
+      child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
+        audio_specific_config: track.fmtp.config
+      })
+    else
+      link_builder
+    end
   end
 
   defp parser(link_builder, _track, _encoding), do: link_builder

@@ -424,6 +424,159 @@ defmodule Membrane.RTSP.CameraQuirksTest do
     end
   end
 
+  describe "AAC track" do
+    @aac_frame <<0x21, 0x10, 0x04, 0x60, 0x8C, 0x1C>>
+
+    defp aac_packet(sequence_number, payload) do
+      payload
+      |> MockCamera.rtp_packet(
+        payload_type: 97,
+        sequence_number: sequence_number,
+        timestamp: sequence_number * 1024,
+        marker: true,
+        ssrc: 0xAAC
+      )
+      |> then(&MockCamera.interleaved(0, &1))
+    end
+
+    # one access unit, AAC-hbr: 16 bits of headers, 13 bits of size, 3 bits of index
+    defp aac_hbr_payload(frame), do: <<16::16, byte_size(frame)::13, 0::3, frame::binary>>
+
+    defp aac_sdp(fmtp_line) do
+      """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=audio 0 RTP/AVP 97
+      a=rtpmap:97 MPEG4-GENERIC/16000/1
+      #{fmtp_line}
+      a=control:trackID=1
+      """
+    end
+
+    defp assert_aac_depayloaded_with_warning(fmtp_line) do
+      sdp = aac_sdp(fmtp_line)
+      media = Enum.map(0..3, fn n -> aac_packet(n, aac_hbr_payload(@aac_frame)) end)
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_sink_stream_format(pipeline, {:sink, "trackID=1"}, %Membrane.AAC{
+            sample_rate: 16_000,
+            channels: 1
+          })
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: payload})
+          assert String.ends_with?(payload, @aac_frame)
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+        end)
+
+      assert log =~ "depayloading it in the mode :hbr"
+    end
+
+    test "without a mode is depayloaded according to sizelength and indexlength, with a warning" do
+      assert_aac_depayloaded_with_warning(
+        "a=fmtp:97 streamtype=5; profile-level-id=15; config=1408; SizeLength=13; IndexLength=3; IndexDeltaLength=3;"
+      )
+    end
+
+    test "without a mode and indexdeltalength is depayloaded the same way" do
+      assert_aac_depayloaded_with_warning("a=fmtp:97 config=1408;sizelength=13;indexlength=3")
+    end
+
+    test "with the mode generic is depayloaded according to sizelength and indexlength" do
+      sdp =
+        aac_sdp(
+          "a=fmtp:97 mode=generic;config=1408;sizelength=13;indexlength=3;indexdeltalength=3"
+        )
+
+      media = Enum.map(0..3, fn n -> aac_packet(n, aac_hbr_payload(@aac_frame)) end)
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_sink_stream_format(pipeline, {:sink, "trackID=1"}, %Membrane.AAC{sample_rate: 16_000})
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: payload})
+      assert String.ends_with?(payload, @aac_frame)
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+    end
+
+    test "with a packet that cannot be depayloaded loses that packet only" do
+      sdp =
+        aac_sdp(
+          "a=fmtp:97 mode=AAC-hbr;config=1408;sizelength=13;indexlength=3;indexdeltalength=3"
+        )
+
+      media = [
+        aac_packet(0, aac_hbr_payload(@aac_frame)),
+        aac_packet(1, <<4000::16, 1, 2, 3>>),
+        aac_packet(2, aac_hbr_payload(<<0x21, 0x99>>))
+      ]
+
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: first})
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: second})
+          assert String.ends_with?(first, @aac_frame)
+          assert String.ends_with?(second, <<0x21, 0x99>>)
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+        end)
+
+      assert log =~ "Dropping an RTP packet"
+    end
+
+    defp assert_aac_passed_on_as_rtp_payload(fmtp_line) do
+      payload = aac_hbr_payload(@aac_frame)
+      media = [aac_packet(0, payload)]
+      {camera, port} = start_camera(MockCamera.script(aac_sdp(fmtp_line), media))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_sink_stream_format(pipeline, {:sink, "trackID=1"}, %Membrane.RTP{})
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: ^payload})
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+        end)
+
+      assert log =~ "Cannot depayload the AAC track \"trackID=1\""
+    end
+
+    test "without fmtp is passed on as RTP payload" do
+      assert_aac_passed_on_as_rtp_payload("a=recvonly")
+    end
+
+    test "without a config is passed on as RTP payload" do
+      assert_aac_passed_on_as_rtp_payload("a=fmtp:97 mode=AAC-hbr;sizelength=13;indexlength=3")
+    end
+
+    test "with neither a mode nor lengths is passed on as RTP payload" do
+      assert_aac_passed_on_as_rtp_payload("a=fmtp:97 config=1408")
+    end
+
+    test "with the mode generic and an AU header of no AAC mode is passed on as RTP payload" do
+      assert_aac_passed_on_as_rtp_payload(
+        "a=fmtp:97 mode=generic;config=1408;sizelength=13;indexlength=3;indexdeltalength=3;ctsdeltalength=4"
+      )
+    end
+  end
+
   describe "status code" do
     @video_sdp """
     v=0
