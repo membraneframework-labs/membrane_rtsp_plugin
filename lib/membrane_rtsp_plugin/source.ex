@@ -17,6 +17,14 @@ defmodule Membrane.RTSP.Source do
   When the element finishes setting up all tracks it will send a `t:set_up_tracks/0` notification.
   To receive a track a corresponding `Pad.ref(:output, control_path)` pad has to be connected,
   where each track's control path is provided in the `t:set_up_tracks/0` notification.
+
+  ## Servers that deviate from the specifications
+
+  The source accepts some deviations from the RFCs and logs a warning for each of them:
+
+  * a track without a usable payload type is left out of the `t:set_up_tracks/0` notification,
+  * the `rtpmap` of a track is `nil` when the description has none and the payload type
+    is dynamic. For the static payload types of RFC 3551 the mapping from the RFC is reported.
   """
 
   use Membrane.Bin
@@ -213,9 +221,9 @@ defmodule Membrane.RTSP.Source do
       get_child(demuxer_name)
       |> via_out(:output,
         options: [
-          stream_id: {:payload_type, track.rtpmap.payload_type},
+          stream_id: {:payload_type, track.payload_type},
           jitter_buffer_latency: jitter_buffer_latency,
-          clock_rate: track.rtpmap.clock_rate
+          clock_rate: track.rtpmap && track.rtpmap.clock_rate
         ]
       )
       |> depayloader(track)
@@ -232,19 +240,29 @@ defmodule Membrane.RTSP.Source do
 
   @spec get_set_up_tracks_notification(State.t()) :: set_up_tracks_notification()
   defp get_set_up_tracks_notification(state) do
-    {:set_up_tracks, Enum.map(state.tracks, &Map.delete(&1, :transport))}
+    {:set_up_tracks,
+     Enum.map(state.tracks, &Map.drop(&1, [:transport, :payload_type, :sdp_rtpmap?]))}
+  end
+
+  @spec payload_type_mapping([ConnectionManager.track()]) ::
+          Membrane.RTP.PayloadFormat.payload_type_mapping()
+  defp payload_type_mapping(tracks) do
+    tracks
+    |> Enum.filter(fn track -> track.sdp_rtpmap? or track.rtpmap == nil end)
+    |> Map.new(fn
+      # keeps the demuxer from applying the defaults that are registered for the payload type
+      %{rtpmap: nil, payload_type: payload_type} ->
+        {payload_type, %{encoding_name: :unknown, clock_rate: nil}}
+
+      %{rtpmap: rtpmap, payload_type: payload_type} ->
+        {payload_type,
+         %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
+    end)
   end
 
   @spec create_sources_spec(State.t()) :: Membrane.ChildrenSpec.t()
   defp create_sources_spec(state) do
-    payload_type_mapping =
-      Map.new(
-        state.tracks,
-        fn %{rtpmap: rtpmap} ->
-          {rtpmap.payload_type,
-           %{encoding_name: encoding_name(rtpmap.encoding), clock_rate: rtpmap.clock_rate}}
-        end
-      )
+    payload_type_mapping = payload_type_mapping(state.tracks)
 
     case state.transport do
       :tcp ->
@@ -292,7 +310,8 @@ defmodule Membrane.RTSP.Source do
   @spec encoding_name(String.t()) :: atom()
   defp encoding_name(encoding), do: Map.get(@encoding_names, String.downcase(encoding), :unknown)
 
-  @spec encoding(ConnectionManager.track()) :: String.t()
+  @spec encoding(ConnectionManager.track()) :: String.t() | nil
+  defp encoding(%{rtpmap: nil}), do: nil
   defp encoding(%{rtpmap: rtpmap}), do: String.downcase(rtpmap.encoding)
 
   @spec depayloader(ChildrenSpec.builder(), ConnectionManager.track()) :: ChildrenSpec.builder()

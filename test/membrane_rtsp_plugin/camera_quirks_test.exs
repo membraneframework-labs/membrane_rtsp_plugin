@@ -88,6 +88,295 @@ defmodule Membrane.RTSP.CameraQuirksTest do
     end
   end
 
+  describe "media section" do
+    @pcma_packet <<0xD5, 0x55, 0xD5, 0x55, 0xD5, 0x55, 0xD5, 0x55>>
+
+    defp audio_media(payload_type, channel) do
+      Enum.map(0..4, fn sequence_number ->
+        @pcma_packet
+        |> MockCamera.rtp_packet(
+          payload_type: payload_type,
+          sequence_number: sequence_number,
+          timestamp: sequence_number * 8,
+          ssrc: 0xA0D10
+        )
+        |> then(&MockCamera.interleaved(channel, &1))
+      end)
+    end
+
+    test "without rtpmap for a static payload type is set up with the RFC 3551 mapping" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H264/90000
+      a=control:trackID=0
+      m=audio 0 RTP/AVP 8
+      a=control:trackID=1
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, h264_media(96) ++ audio_media(8, 2)))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_pipeline_notified(pipeline, :source, {:set_up_tracks, tracks})
+
+      assert [
+               %{control_path: "trackID=0", type: :video, rtpmap: %{encoding: "H264"}},
+               %{
+                 control_path: "trackID=1",
+                 type: :audio,
+                 fmtp: nil,
+                 rtpmap: %ExSDP.Attribute.RTPMapping{
+                   payload_type: 8,
+                   encoding: "PCMA",
+                   clock_rate: 8000,
+                   params: 1
+                 }
+               }
+             ] = Enum.sort_by(tracks, & &1.control_path)
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: @pcma_packet})
+      assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{})
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+    end
+
+    test "with several formats is set up for the first one, whatever the order of the attributes" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=audio 0 RTP/AVP 97 101
+      a=rtpmap:101 telephone-event/8000
+      a=fmtp:101 0-15
+      a=rtpmap:97 PCMA/16000
+      a=control:trackID=1
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, audio_media(97, 0)))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_pipeline_notified(pipeline, :source, {:set_up_tracks, [track]})
+
+      assert %{rtpmap: %{payload_type: 97, encoding: "PCMA", clock_rate: 16_000}, fmtp: nil} =
+               track
+
+      assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: @pcma_packet})
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+    end
+
+    test "without rtpmap for a dynamic payload type is set up and passed on unparsed" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=application 0 RTP/AVP 96
+      a=control:trackID=2
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, audio_media(96, 0)))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_pipeline_notified(
+            pipeline,
+            :source,
+            {:set_up_tracks, [%{rtpmap: nil, type: :application}]}
+          )
+
+          assert_sink_stream_format(pipeline, {:sink, "trackID=2"}, %Membrane.RTP{
+            payload_format: nil
+          })
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=2"}, %Membrane.Buffer{
+            payload: @pcma_packet,
+            pts: nil
+          })
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=2"}, :input, 5_000)
+        end)
+
+      assert log =~ "The application media has no rtpmap for its payload type 96"
+    end
+
+    test "whose format is not a payload type is set up through the payload type of its rtpmap" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=application 0 RTP/AVP smart/1/90000
+      a=rtpmap:98 TP-LINK/90000
+      a=control:trackID=3
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, audio_media(98, 0)))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_pipeline_notified(pipeline, :source, {:set_up_tracks, [track]})
+          assert %{rtpmap: %{payload_type: 98, encoding: "TP-LINK"}} = track
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=3"}, %Membrane.Buffer{
+            payload: @pcma_packet
+          })
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=3"}, :input, 5_000)
+        end)
+
+      assert log =~
+               ~s(The format "smart/1/90000" of the application media is not an RTP payload type)
+    end
+
+    test "with a payload type that cannot be told apart from RTCP is left out" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=video 0 RTP/AVP 96
+      a=rtpmap:96 H264/90000
+      a=control:trackID=0
+      m=application 0 RTP/AVP smart/1/90000
+      a=rtpmap:95 TP-LINK/90000
+      a=control:trackID=3
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, h264_media(96)))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_pipeline_notified(
+            pipeline,
+            :source,
+            {:set_up_tracks, [%{control_path: "trackID=0"}]}
+          )
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{})
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+        end)
+
+      assert log =~ ~s(Leaving out the application track "trackID=3": payload type 95)
+    end
+
+    test "with the transport RTP/AVP/TCP is set up by its format" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=audio 0 RTP/AVP/TCP 8
+      a=control:trackID=1
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, audio_media(8, 0)))
+      pipeline = CameraPipeline.start_supervised!(port)
+
+      assert_pipeline_notified(pipeline, :source, {:set_up_tracks, [track]})
+      assert %{rtpmap: %{payload_type: 8, encoding: "PCMA"}} = track
+      assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{payload: @pcma_packet})
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+    end
+
+    test "whose only fmtp names another payload type is set up with that fmtp" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=audio 0 RTP/AVP 104
+      a=rtpmap:104 MPEG4-GENERIC/16000/1
+      a=fmtp:97 mode=AAC-hbr;config=1408;sizelength=13;indexlength=3;indexdeltalength=3
+      a=control:trackID=1
+      """
+
+      frame = <<0x21, 0x10, 0x04, 0x60, 0x8C, 0x1C>>
+
+      media =
+        Enum.map(0..2, fn n ->
+          <<16::16, byte_size(frame)::13, 0::3, frame::binary>>
+          |> MockCamera.rtp_packet(payload_type: 104, sequence_number: n, timestamp: n * 1024)
+          |> then(&MockCamera.interleaved(0, &1))
+        end)
+
+      {camera, port} = start_camera(MockCamera.script(sdp, media))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_sink_stream_format(pipeline, {:sink, "trackID=1"}, %Membrane.AAC{
+            sample_rate: 16_000
+          })
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{})
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+        end)
+
+      assert log =~
+               "The fmtp of the audio media is given for payload type 97, using it for payload type 104"
+    end
+
+    test "that names no usable payload type is left out, and the others are set up" do
+      sdp = """
+      v=0
+      o=- 0 0 IN IP4 127.0.0.1
+      s=Stream
+      t=0 0
+      m=audio 0 RTP/AVP 8
+      a=control:trackID=1
+      m=application 0 RTP/AVP 77
+      a=control:trackID=2
+      m=application 0 udp wb
+      a=control:trackID=3
+      """
+
+      {camera, port} = start_camera(MockCamera.script(sdp, audio_media(8, 0)))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+
+          assert_pipeline_notified(
+            pipeline,
+            :source,
+            {:set_up_tracks, [%{control_path: "trackID=1"}]}
+          )
+
+          assert_sink_buffer(pipeline, {:sink, "trackID=1"}, %Membrane.Buffer{})
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=1"}, :input, 5_000)
+        end)
+
+      assert log =~ "trackID=2"
+      assert log =~ "trackID=3"
+      assert_received {:mock_camera, :request, "SETUP", %{url: setup_url}}
+      assert setup_url =~ "trackID=1"
+      refute_received {:mock_camera, :request, "SETUP", _request}
+    end
+  end
+
   describe "status code" do
     @video_sdp """
     v=0
@@ -178,6 +467,19 @@ defmodule Membrane.RTSP.CameraQuirksTest do
 
       assert connection_failure(MockCamera.script(@video_sdp, [], %{"DESCRIBE" => no_sdp})) =~
                "the reply to DESCRIBE carried no session description"
+
+      audio_only = """
+      v=0
+      s=Stream
+      m=text 0 RTP/AVP 98
+      a=control:trackID=5
+      """
+
+      assert connection_failure(MockCamera.script(audio_only)) =~
+               "none of the media in the session description can be received: text"
+
+      assert connection_failure(MockCamera.script("v=0\ns=Stream\n")) =~
+               "the session description has no media"
     end
   end
 
