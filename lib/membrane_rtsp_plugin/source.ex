@@ -411,18 +411,14 @@ defmodule Membrane.RTSP.Source do
   @spec aac_mode(ConnectionManager.track()) ::
           {:ok, Membrane.RTP.AAC.Utils.mode()} | {:error, reason :: String.t()}
   defp aac_mode(%{fmtp: %ExSDP.Attribute.FMTP{config: config} = fmtp}) when is_binary(config) do
-    case {aac_mode_of_fmtp(fmtp), Membrane.AAC.Parser.AudioSpecificConfig.parse(config)} do
-      {mode, {:ok, %Membrane.AAC{channels: channels}}} when mode != nil and channels != nil ->
-        {:ok, mode}
-
-      {nil, _parsed_config} ->
-        {:error, @aac_fmtp_requirement}
-
-      {_mode, {:ok, _stream_format}} ->
-        {:error, "its config does not give the number of channels"}
-
-      {_mode, {:error, reason}} ->
-        {:error, "its config cannot be parsed (#{inspect(reason)})"}
+    with {:mode, mode} when mode != nil <- {:mode, aac_mode_of_fmtp(fmtp)},
+         {:ok, %Membrane.AAC{channels: channels}} when channels != nil <-
+           Membrane.AAC.Parser.AudioSpecificConfig.parse(config) do
+      {:ok, mode}
+    else
+      {:mode, nil} -> {:error, @aac_fmtp_requirement}
+      {:ok, _stream_format} -> {:error, "its config does not give the number of channels"}
+      {:error, reason} -> {:error, "its config cannot be parsed (#{inspect(reason)})"}
     end
   end
 
