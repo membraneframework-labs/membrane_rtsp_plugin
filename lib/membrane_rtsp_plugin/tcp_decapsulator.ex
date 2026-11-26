@@ -74,14 +74,13 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
          rtsp_session,
          complete_packets
        ) do
-    case rest do
-      <<complete_packet_binary::binary-size(payload_length), rest::binary>> ->
-        complete_packets = [complete_packet_binary | complete_packets]
+    if byte_size(rest) >= payload_length do
+      {complete_packet_binary, rest} = :erlang.split_binary(rest, payload_length)
+      complete_packets = [complete_packet_binary | complete_packets]
 
-        get_complete_packets(rest, rtsp_session, complete_packets)
-
-      _incomplete_packet_binary ->
-        {packets_binary, Enum.reverse(complete_packets)}
+      get_complete_packets(rest, rtsp_session, complete_packets)
+    else
+      {packets_binary, Enum.reverse(complete_packets)}
     end
   end
 
@@ -100,8 +99,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
         rest_length = actual_length - expected_length
         rtsp_message_length = byte_size(rtsp_message_start) - rest_length
 
-        <<rtsp_message::binary-size(rtsp_message_length)-unit(8), rest::binary>> =
-          rtsp_message_start
+        {rtsp_message, rest} = :erlang.split_binary(rtsp_message_start, rtsp_message_length)
 
         RTSP.handle_response(rtsp_session, rtsp_message)
 

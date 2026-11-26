@@ -2,7 +2,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   @moduledoc false
 
   require Membrane.Logger
-  require Membrane.Pad
 
   alias Membrane.RTSP
   alias Membrane.RTSP.Source.State

@@ -3,8 +3,6 @@ defmodule Membrane.RTSP.RequestHandler do
 
   use Membrane.RTSP.Server.Handler
 
-  require Logger
-
   alias Membrane.RTSP.Response
 
   @sdp """
