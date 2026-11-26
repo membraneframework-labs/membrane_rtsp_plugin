@@ -253,6 +253,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
 
       case RTSP.setup(rtsp_session, track.control_path, transport_header) do
         {:ok, %RTSP.Response{status: status} = response} when status in 200..299 ->
+          warn_unless_interleaved(response, track)
           track = %{track | transport: {:tcp, socket}}
           {:cont, {:ok, [track | set_up_tracks], [response | responses]}}
 
@@ -267,6 +268,27 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
            {:error, {:setting_up_rtsp_connection_failed, describe_failure(request, error)}}}
       end
     end)
+  end
+
+  @spec warn_unless_interleaved(RTSP.Response.t(), track()) :: :ok
+  defp warn_unless_interleaved(response, track) do
+    case RTSP.Response.get_header(response, "Transport") do
+      {:ok, transport} ->
+        interleaved? = transport |> String.downcase() |> String.contains?(["tcp", "interleaved"])
+
+        if not interleaved? do
+          Membrane.Logger.warning(
+            "The server answered the request for interleaved transport of the track " <>
+              "#{inspect(track.control_path)} with Transport: #{transport}. " <>
+              "If no media arrives, it is sending the media another way."
+          )
+        end
+
+        :ok
+
+      {:error, :no_such_header} ->
+        :ok
+    end
   end
 
   @spec setup_rtsp_connection_with_udp(

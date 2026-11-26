@@ -822,6 +822,29 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       message
     end
 
+    test "200 for SETUP that names another transport than the one asked for is reported" do
+      setup = fn _request ->
+        MockCamera.response("RTSP/1.0 200 OK", [
+          "Session: 12345678",
+          "Transport: RTP/AVP;unicast;client_port=5000-5001;server_port=6000-6001"
+        ])
+      end
+
+      {camera, port} =
+        start_camera(MockCamera.script(@video_sdp, h264_media(96), %{"SETUP" => setup}))
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          pipeline = CameraPipeline.start_supervised!(port)
+          assert_sink_buffer(pipeline, {:sink, "trackID=0"}, %Membrane.Buffer{})
+
+          MockCamera.close_connection(camera)
+          assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+        end)
+
+      assert log =~ "with Transport: RTP/AVP;unicast;client_port=5000-5001;server_port=6000-6001"
+    end
+
     test "that refuses a request is named in the error" do
       not_found = fn _request -> MockCamera.response("RTSP/1.0 404 Stream Not Found") end
 
