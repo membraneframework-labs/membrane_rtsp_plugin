@@ -81,4 +81,35 @@ defmodule Membrane.RTSP.DecapsulatorTest do
       perform_standard_test(rtp_packets_lengths, tcp_segments_lengths)
     end
   end
+
+  describe "RTSP Decapsulator skips an empty line after an RTSP message" do
+    test "wherever the tcp segments cut it" do
+      response = "RTSP/1.0 200 OK\r\nCSeq: 5\r\n\r\n"
+      packet = <<1, 2, 3>>
+      [frame] = encapsulate_rtp_packets([packet])
+
+      Enum.each(0..2, fn cut ->
+        {empty_line_start, empty_line_end} = String.split_at("\r\n", cut)
+        tcp_segments = [frame <> response <> empty_line_start, empty_line_end <> frame]
+
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            pipeline =
+              Pipeline.start_link_supervised!(
+                spec:
+                  child(:source, %Source{output: tcp_segments})
+                  |> child(:decapsulator, %Decapsulator{rtsp_session: self()})
+                  |> child(:sink, Sink)
+              )
+
+            assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+            assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+            assert_receive {:raw_response, ^response}
+            Pipeline.terminate(pipeline)
+          end)
+
+        assert log =~ "Skipping an empty line"
+      end)
+    end
+  end
 end

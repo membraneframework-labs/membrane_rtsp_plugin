@@ -8,8 +8,11 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   ("$" = 36 :: 1 byte)(Channel id :: 1 byte)(Length :: 2 bytes)(packet :: <Length> bytes)
 
   RTSP Messages are not encapsulated this way, but can only be present between RTP packets.
+  Empty lines in front of a packet or a message are skipped with a warning.
   """
   use Membrane.Filter
+
+  require Membrane.Logger
 
   alias Membrane.{Buffer, RemoteStream, RTP, RTSP}
 
@@ -63,6 +66,11 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   @spec get_complete_packets(binary(), RTSP.t() | nil, [binary()]) ::
           {unprocessed_data :: binary(), complete_packets :: [binary()]}
   defp get_complete_packets(packets_binary, rtsp_session, complete_packets \\ [])
+
+  defp get_complete_packets("\r\n" <> rest, rtsp_session, complete_packets) do
+    Membrane.Logger.warning("Skipping an empty line in front of an RTP packet or an RTSP message")
+    get_complete_packets(rest, rtsp_session, complete_packets)
+  end
 
   defp get_complete_packets(packets_binary, _rtsp_session, complete_packets)
        when byte_size(packets_binary) <= 4 do
