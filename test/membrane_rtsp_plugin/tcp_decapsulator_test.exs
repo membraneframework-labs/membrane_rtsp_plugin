@@ -82,6 +82,30 @@ defmodule Membrane.RTSP.DecapsulatorTest do
     end
   end
 
+  describe "RTSP Decapsulator keeps the packets in order" do
+    test "when an RTSP response ends the tcp segment that they came in" do
+      packets = Enum.map(1..3, fn n -> <<n, n, n>> end)
+      response = "RTSP/1.0 200 OK\r\nCSeq: 5\r\n\r\n"
+      tcp_segment = Enum.join(encapsulate_rtp_packets(packets)) <> response
+
+      pipeline =
+        Pipeline.start_link_supervised!(
+          spec:
+            child(:source, %Source{output: [tcp_segment]})
+            |> child(:decapsulator, %Decapsulator{rtsp_session: self()})
+            |> child(:sink, Sink)
+        )
+
+      Enum.each(packets, fn packet ->
+        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: payload})
+        assert payload == packet
+      end)
+
+      assert_receive {:raw_response, ^response}
+      Pipeline.terminate(pipeline)
+    end
+  end
+
   describe "RTSP Decapsulator passes a request of the server to the session" do
     test "wherever the tcp segments cut it" do
       request = "GET_PARAMETER rtsp://localhost/stream RTSP/1.0\r\nCSeq: 7\r\n\r\n"
