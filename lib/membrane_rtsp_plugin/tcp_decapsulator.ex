@@ -104,7 +104,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
       String.starts_with?(data, ["RTSP" | @rtsp_request_starts]) ->
         handle_rtsp_message(data, rtsp_session, complete_packets)
 
-      # the beginning of a request, cut off by the end of a TCP segment
+      # the data ends inside the method name of a request, the rest has not arrived yet
       Enum.any?(@rtsp_request_starts, fn start -> String.starts_with?(start, data) end) ->
         {data, Enum.reverse(complete_packets)}
 
