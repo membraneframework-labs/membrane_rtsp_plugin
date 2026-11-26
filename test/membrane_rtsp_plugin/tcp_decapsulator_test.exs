@@ -82,6 +82,31 @@ defmodule Membrane.RTSP.DecapsulatorTest do
     end
   end
 
+  describe "RTSP Decapsulator passes a request of the server to the session" do
+    test "wherever the tcp segments cut it" do
+      request = "GET_PARAMETER rtsp://localhost/stream RTSP/1.0\r\nCSeq: 7\r\n\r\n"
+      packet = <<1, 2, 3>>
+      [frame] = encapsulate_rtp_packets([packet])
+
+      Enum.each(1..(byte_size(request) - 1), fn cut ->
+        {request_start, request_end} = String.split_at(request, cut)
+
+        pipeline =
+          Pipeline.start_link_supervised!(
+            spec:
+              child(:source, %Source{output: [frame <> request_start, request_end <> frame]})
+              |> child(:decapsulator, %Decapsulator{rtsp_session: self()})
+              |> child(:sink, Sink)
+          )
+
+        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+        assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+        assert_receive {:raw_response, ^request}
+        Pipeline.terminate(pipeline)
+      end)
+    end
+  end
+
   describe "RTSP Decapsulator skips an empty line after an RTSP message" do
     test "wherever the tcp segments cut it" do
       response = "RTSP/1.0 200 OK\r\nCSeq: 5\r\n\r\n"

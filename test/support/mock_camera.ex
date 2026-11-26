@@ -2,8 +2,9 @@ defmodule Membrane.RTSP.MockCamera do
   @moduledoc false
   # A scripted RTSP server. The script is a function `(method, request) -> reply`: the
   # reply goes on the wire byte for byte, with `{CSEQ}` replaced by the CSeq of the
-  # request, and `:close` closes the connection. Requests of the client are forwarded
-  # to the owner as `{:mock_camera, :request, method, request}`.
+  # request, and `:close` closes the connection. Messages from the client are forwarded
+  # to the owner as `{:mock_camera, :request, method, request}` or
+  # `{:mock_camera, :response, raw}`.
 
   use GenServer
 
@@ -154,6 +155,11 @@ defmodule Membrane.RTSP.MockCamera do
       [message, rest] -> handle_messages(handle_message(message, %{state | buffer: rest}))
       [_incomplete] -> state
     end
+  end
+
+  defp handle_message("RTSP/" <> _rest = response, state) do
+    send(state.owner, {:mock_camera, :response, response})
+    state
   end
 
   defp handle_message(raw, state) do

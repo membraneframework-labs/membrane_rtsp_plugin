@@ -8,6 +8,8 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   ("$" = 36 :: 1 byte)(Channel id :: 1 byte)(Length :: 2 bytes)(packet :: <Length> bytes)
 
   RTSP Messages are not encapsulated this way, but can only be present between RTP packets.
+  Both the responses to the requests of the session and the requests that the server sends
+  on its own are passed to the session, which answers the latter.
   Empty lines in front of a packet or a message are skipped with a warning.
   Other data that is neither a packet nor a message is skipped with a warning, up to the next `$`.
   """
@@ -28,6 +30,10 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   def_input_pad :input, accepted_format: %RemoteStream{type: :bytestream}
 
   def_output_pad :output, accepted_format: %RemoteStream{type: :packetized, content_format: RTP}
+
+  @rtsp_request_starts ~w(OPTIONS GET_PARAMETER SET_PARAMETER ANNOUNCE REDIRECT PLAY_NOTIFY
+                          DESCRIBE SETUP PLAY PAUSE RECORD TEARDOWN)
+                       |> Enum.map(fn method -> method <> " " end)
 
   @impl true
   def handle_init(_ctx, opts) do
@@ -93,11 +99,23 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
     end
   end
 
-  defp get_complete_packets(
-         <<"RTSP", _rest::binary>> = rtsp_message_start,
-         rtsp_session,
-         complete_packets_binaries
-       ) do
+  defp get_complete_packets(data, rtsp_session, complete_packets) do
+    cond do
+      String.starts_with?(data, ["RTSP" | @rtsp_request_starts]) ->
+        handle_rtsp_message(data, rtsp_session, complete_packets)
+
+      # the beginning of a request, cut off by the end of a TCP segment
+      Enum.any?(@rtsp_request_starts, fn start -> String.starts_with?(start, data) end) ->
+        {data, Enum.reverse(complete_packets)}
+
+      true ->
+        skip_unknown_data(data, rtsp_session, complete_packets)
+    end
+  end
+
+  @spec handle_rtsp_message(binary(), RTSP.t() | nil, [binary()]) ::
+          {unprocessed_data :: binary(), complete_packets :: [binary()]}
+  defp handle_rtsp_message(rtsp_message_start, rtsp_session, complete_packets_binaries) do
     case RTSP.Response.verify_content_length(rtsp_message_start) do
       {:ok, _expected_length, _actual_length} ->
         RTSP.handle_response(rtsp_session, rtsp_message_start)
@@ -117,10 +135,6 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
       {:error, expected_length, actual_length} when actual_length <= expected_length ->
         {rtsp_message_start, Enum.reverse(complete_packets_binaries)}
     end
-  end
-
-  defp get_complete_packets(data, rtsp_session, complete_packets) do
-    skip_unknown_data(data, rtsp_session, complete_packets)
   end
 
   @spec skip_unknown_data(binary(), RTSP.t() | nil, [binary()]) ::
