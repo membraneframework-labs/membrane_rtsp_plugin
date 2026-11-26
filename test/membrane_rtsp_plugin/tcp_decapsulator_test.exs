@@ -112,4 +112,36 @@ defmodule Membrane.RTSP.DecapsulatorTest do
       end)
     end
   end
+
+  describe "RTSP Decapsulator skips data that is neither an interleaved packet nor an RTSP message" do
+    test "wherever the tcp segments cut it" do
+      unknown_data = <<0, 255, 1, 2, 3, 4, 5, 6, 7, 8>>
+      packet = <<1, 2, 3>>
+      [frame] = encapsulate_rtp_packets([packet])
+
+      Enum.each(0..byte_size(unknown_data), fn cut ->
+        {unknown_data_start, unknown_data_end} = :erlang.split_binary(unknown_data, cut)
+        tcp_segments = [frame <> unknown_data_start, unknown_data_end <> frame]
+
+        log =
+          ExUnit.CaptureLog.capture_log(fn ->
+            pipeline =
+              Pipeline.start_link_supervised!(
+                spec:
+                  child(:source, %Source{output: tcp_segments})
+                  |> child(:decapsulator, %Decapsulator{rtsp_session: self()})
+                  |> child(:sink, Sink)
+              )
+
+            assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+            assert_sink_buffer(pipeline, :sink, %Membrane.Buffer{payload: ^packet})
+            assert_end_of_stream(pipeline, :sink)
+            refute_sink_buffer(pipeline, :sink, _buffer, 0)
+            Pipeline.terminate(pipeline)
+          end)
+
+        assert log =~ "bytes that are neither an interleaved RTP packet nor an RTSP message"
+      end)
+    end
+  end
 end

@@ -9,6 +9,7 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
 
   RTSP Messages are not encapsulated this way, but can only be present between RTP packets.
   Empty lines in front of a packet or a message are skipped with a warning.
+  Other data that is neither a packet nor a message is skipped with a warning, up to the next `$`.
   """
   use Membrane.Filter
 
@@ -116,5 +117,26 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
       {:error, expected_length, actual_length} when actual_length <= expected_length ->
         {rtsp_message_start, Enum.reverse(complete_packets_binaries)}
     end
+  end
+
+  defp get_complete_packets(data, rtsp_session, complete_packets) do
+    skip_unknown_data(data, rtsp_session, complete_packets)
+  end
+
+  @spec skip_unknown_data(binary(), RTSP.t() | nil, [binary()]) ::
+          {unprocessed_data :: binary(), complete_packets :: [binary()]}
+  defp skip_unknown_data(data, rtsp_session, complete_packets) do
+    rest =
+      case :binary.match(data, "$") do
+        {position, _length} -> binary_slice(data, position..-1//1)
+        :nomatch -> <<>>
+      end
+
+    Membrane.Logger.warning(
+      "Skipping #{byte_size(data) - byte_size(rest)} bytes that are neither an interleaved " <>
+        "RTP packet nor an RTSP message: #{inspect(binary_slice(data, 0, 32))}"
+    )
+
+    get_complete_packets(rest, rtsp_session, complete_packets)
   end
 end
