@@ -436,8 +436,7 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
   end
 
   # Encoding names, clock rates and channel counts that RFC 3551 (tables 4 and 5)
-  # assigns to static payload types. A media section does not need an rtpmap for them.
-  # The channel count of MPA is carried in its payload.
+  # assigns to static payload types. The channel count of MPA is carried in its payload.
   @static_payload_types %{
     0 => {"PCMU", 8_000, 1},
     3 => {"GSM", 8_000, 1},
@@ -465,7 +464,6 @@ defmodule Membrane.RTSP.Source.ConnectionManager do
     34 => {"H263", 90_000, nil}
   }
 
-  # The first format of the media line decides.
   @spec get_payload_format(ExSDP.Media.t()) ::
           {:ok, RTP.payload_type(), ExSDP.Attribute.RTPMapping.t() | nil, boolean()}
           | {:error, String.t()}
