@@ -140,15 +140,15 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   @spec skip_unknown_data(binary(), RTSP.t() | nil, [binary()]) ::
           {unprocessed_data :: binary(), complete_packets :: [binary()]}
   defp skip_unknown_data(data, rtsp_session, complete_packets) do
-    rest =
+    {unknown_data, rest} =
       case :binary.match(data, "$") do
-        {position, _length} -> binary_slice(data, position..-1//1)
-        :nomatch -> <<>>
+        {position, _length} -> :erlang.split_binary(data, position)
+        :nomatch -> {data, <<>>}
       end
 
     Membrane.Logger.warning(
-      "Skipping #{byte_size(data) - byte_size(rest)} bytes that are neither an interleaved " <>
-        "RTP packet nor an RTSP message: #{inspect(binary_slice(data, 0, 32))}"
+      "Skipping #{byte_size(unknown_data)} bytes that are neither an interleaved RTP packet " <>
+        "nor an RTSP message: #{inspect(unknown_data, limit: 32, printable_limit: 32)}"
     )
 
     get_complete_packets(rest, rtsp_session, complete_packets)
