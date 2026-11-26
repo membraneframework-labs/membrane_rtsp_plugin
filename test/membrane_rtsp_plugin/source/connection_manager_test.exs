@@ -50,6 +50,8 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
       do: RTSP.start(uri, options)
     )
 
+    expect(RTSP.options(^pid), do: {:ok, Response.new(200)})
+
     expect RTSP.describe(^pid, [{"accept", "application/sdp"}]) do
       {:ok, %Response{Response.new(200) | body: ExSDP.parse!(@sdp)}}
     end
@@ -81,6 +83,7 @@ defmodule Membrane.RTSP.Source.ConnectionManagerTest do
     expect(RTSP.start(@stream_uri, _options), do: {:error, :econnrefused})
     expect(RTSP.start(@stream_uri, _options), do: {:ok, pid})
 
+    expect(RTSP.options(^pid), do: {:ok, Response.new(200)})
     expect(RTSP.describe(^pid, [{"accept", "application/sdp"}]), do: {:ok, Response.new(404)})
 
     assert_raise RuntimeError,
