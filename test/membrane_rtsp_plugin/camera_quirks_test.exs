@@ -556,6 +556,7 @@ defmodule Membrane.RTSP.CameraQuirksTest do
         end)
 
       assert log =~ "Cannot depayload the AAC track \"trackID=1\""
+      log
     end
 
     test "without fmtp is passed on as RTP payload" do
@@ -574,6 +575,35 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert_aac_passed_on_as_rtp_payload(
         "a=fmtp:97 mode=generic;config=1408;sizelength=13;indexlength=3;indexdeltalength=3;ctsdeltalength=4"
       )
+    end
+
+    test "with a config of an audio object type that the parser does not have is passed on as RTP payload" do
+      # audio object type 23 (AAC Low Delay), 16 kHz, mono
+      log =
+        assert_aac_passed_on_as_rtp_payload(
+          "a=fmtp:97 mode=AAC-hbr;config=BC08;sizelength=13;indexlength=3;indexdeltalength=3"
+        )
+
+      assert log =~ "its config cannot be parsed ({:unsupported_audio_object_type_id, 23})"
+    end
+
+    test "with a config that is too short is passed on as RTP payload" do
+      log =
+        assert_aac_passed_on_as_rtp_payload(
+          "a=fmtp:97 mode=AAC-hbr;config=14;sizelength=13;indexlength=3;indexdeltalength=3"
+        )
+
+      assert log =~ "its config cannot be parsed (:too_short)"
+    end
+
+    test "with a config that does not give the number of channels is passed on as RTP payload" do
+      # AAC Low Complexity, 16 kHz, channel configuration 0
+      log =
+        assert_aac_passed_on_as_rtp_payload(
+          "a=fmtp:97 mode=AAC-hbr;config=1400;sizelength=13;indexlength=3;indexdeltalength=3"
+        )
+
+      assert log =~ "its config does not give the number of channels"
     end
   end
 

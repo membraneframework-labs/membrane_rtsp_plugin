@@ -347,16 +347,7 @@ defmodule Membrane.RTSP.Source do
   @spec aac_depayloader(ConnectionManager.track()) :: struct() | nil
   defp aac_depayloader(track) do
     case aac_mode(track) do
-      nil ->
-        Membrane.Logger.warning("""
-        Cannot depayload the AAC track #{inspect(track.control_path)}: its fmtp has to \
-        give the config and either the mode AAC-hbr or AAC-lbr or the AU header fields \
-        of one of them, got #{inspect(track.fmtp)}. Passing the RTP payload on as it is.
-        """)
-
-        nil
-
-      mode ->
+      {:ok, mode} ->
         if track.fmtp.mode == nil or track.fmtp.indexdeltalength != track.fmtp.indexlength do
           Membrane.Logger.warning(
             "The fmtp of the AAC track #{inspect(track.control_path)} gives no mode or no " <>
@@ -365,6 +356,14 @@ defmodule Membrane.RTSP.Source do
         end
 
         %Membrane.RTP.AAC.Depayloader{mode: mode}
+
+      {:error, reason} ->
+        Membrane.Logger.warning("""
+        Cannot depayload the AAC track #{inspect(track.control_path)}: #{reason}, \
+        got #{inspect(track.fmtp)}. Passing the RTP payload on as it is.
+        """)
+
+        nil
     end
   end
 
@@ -380,8 +379,31 @@ defmodule Membrane.RTSP.Source do
     :auxillarydatasizelength
   ]
 
-  @spec aac_mode(ConnectionManager.track()) :: Membrane.RTP.AAC.Utils.mode() | nil
+  @aac_fmtp_requirement "its fmtp has to give the config and either the mode AAC-hbr or " <>
+                          "AAC-lbr or the AU header fields of one of them"
+
+  @spec aac_mode(ConnectionManager.track()) ::
+          {:ok, Membrane.RTP.AAC.Utils.mode()} | {:error, reason :: String.t()}
   defp aac_mode(%{fmtp: %ExSDP.Attribute.FMTP{config: config} = fmtp}) when is_binary(config) do
+    case {aac_mode_of_fmtp(fmtp), Membrane.AAC.Parser.AudioSpecificConfig.parse(config)} do
+      {mode, {:ok, %Membrane.AAC{channels: channels}}} when mode != nil and channels != nil ->
+        {:ok, mode}
+
+      {nil, _parsed_config} ->
+        {:error, @aac_fmtp_requirement}
+
+      {_mode, {:ok, _stream_format}} ->
+        {:error, "its config does not give the number of channels"}
+
+      {_mode, {:error, reason}} ->
+        {:error, "its config cannot be parsed (#{inspect(reason)})"}
+    end
+  end
+
+  defp aac_mode(_track), do: {:error, @aac_fmtp_requirement}
+
+  @spec aac_mode_of_fmtp(ExSDP.Attribute.FMTP.t()) :: Membrane.RTP.AAC.Utils.mode() | nil
+  defp aac_mode_of_fmtp(fmtp) do
     case fmtp do
       %{mode: :AAC_hbr} -> :hbr
       %{mode: :AAC_lbr} -> :lbr
@@ -389,8 +411,6 @@ defmodule Membrane.RTSP.Source do
       _other -> nil
     end
   end
-
-  defp aac_mode(_track), do: nil
 
   @spec aac_mode_of_au_header(ExSDP.Attribute.FMTP.t()) :: Membrane.RTP.AAC.Utils.mode() | nil
   defp aac_mode_of_au_header(fmtp) do
@@ -428,12 +448,14 @@ defmodule Membrane.RTSP.Source do
   end
 
   defp parser(link_builder, %{type: :audio} = track, "mpeg4-generic") do
-    if aac_mode(track) do
-      child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
-        audio_specific_config: track.fmtp.config
-      })
-    else
-      link_builder
+    case aac_mode(track) do
+      {:ok, _mode} ->
+        child(link_builder, {:parser, make_ref()}, %Membrane.AAC.Parser{
+          audio_specific_config: track.fmtp.config
+        })
+
+      {:error, _reason} ->
+        link_builder
     end
   end
 
