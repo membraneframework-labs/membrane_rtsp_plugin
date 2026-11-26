@@ -918,6 +918,18 @@ defmodule Membrane.RTSP.CameraQuirksTest do
       assert log =~ "answered with status 551"
     end
 
+    test "stops when the server closes the connection" do
+      script = MockCamera.script(@video_sdp, h264_media(96))
+      interval = Membrane.Time.milliseconds(300)
+      {camera, pipeline} = start_playing(script, keep_alive_interval: interval)
+      monitor = Process.monitor(pipeline)
+
+      MockCamera.close_connection(camera)
+      assert_end_of_stream(pipeline, {:sink, "trackID=0"}, :input, 5_000)
+
+      refute_receive {:DOWN, ^monitor, :process, ^pipeline, _reason}, 1_000
+    end
+
     test "that the server refuses for another reason still ends the stream" do
       gone = fn _request -> MockCamera.response("RTSP/1.0 454 Session Not Found") end
 

@@ -177,6 +177,16 @@ defmodule Membrane.RTSP.Source do
   end
 
   @impl true
+  def handle_element_end_of_stream(:tcp_decapsulator, :input, _ctx, state) do
+    {[], %{state | end_of_stream: true}}
+  end
+
+  @impl true
+  def handle_element_end_of_stream(_element, _pad, _ctx, state) do
+    {[], state}
+  end
+
+  @impl true
   def handle_info(
         {:DOWN, _ref, :process, rtsp_session, reason},
         ctx,
