@@ -8,8 +8,14 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   ("$" = 36 :: 1 byte)(Channel id :: 1 byte)(Length :: 2 bytes)(packet :: <Length> bytes)
 
   RTSP Messages are not encapsulated this way, but can only be present between RTP packets.
+  Both the responses to the requests of the session and the requests that the server sends
+  on its own are passed to the session, which answers the latter.
+  Empty lines in front of a packet or a message are skipped with a warning.
+  Other data that is neither a packet nor a message is skipped with a warning, up to the next `$`.
   """
   use Membrane.Filter
+
+  require Membrane.Logger
 
   alias Membrane.{Buffer, RemoteStream, RTP, RTSP}
 
@@ -24,6 +30,10 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
   def_input_pad :input, accepted_format: %RemoteStream{type: :bytestream}
 
   def_output_pad :output, accepted_format: %RemoteStream{type: :packetized, content_format: RTP}
+
+  @rtsp_request_starts ~w(OPTIONS GET_PARAMETER SET_PARAMETER ANNOUNCE REDIRECT PLAY_NOTIFY
+                          DESCRIBE SETUP PLAY PAUSE RECORD TEARDOWN)
+                       |> Enum.map(fn method -> method <> " " end)
 
   @impl true
   def handle_init(_ctx, opts) do
@@ -64,6 +74,11 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
           {unprocessed_data :: binary(), complete_packets :: [binary()]}
   defp get_complete_packets(packets_binary, rtsp_session, complete_packets \\ [])
 
+  defp get_complete_packets("\r\n" <> rest, rtsp_session, complete_packets) do
+    Membrane.Logger.warning("Skipping an empty line in front of an RTP packet or an RTSP message")
+    get_complete_packets(rest, rtsp_session, complete_packets)
+  end
+
   defp get_complete_packets(packets_binary, _rtsp_session, complete_packets)
        when byte_size(packets_binary) <= 4 do
     {packets_binary, Enum.reverse(complete_packets)}
@@ -74,34 +89,44 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
          rtsp_session,
          complete_packets
        ) do
-    case rest do
-      <<complete_packet_binary::binary-size(payload_length), rest::binary>> ->
-        complete_packets = [complete_packet_binary | complete_packets]
+    if byte_size(rest) >= payload_length do
+      {complete_packet_binary, rest} = :erlang.split_binary(rest, payload_length)
+      complete_packets = [complete_packet_binary | complete_packets]
 
-        get_complete_packets(rest, rtsp_session, complete_packets)
-
-      _incomplete_packet_binary ->
-        {packets_binary, Enum.reverse(complete_packets)}
+      get_complete_packets(rest, rtsp_session, complete_packets)
+    else
+      {packets_binary, Enum.reverse(complete_packets)}
     end
   end
 
-  defp get_complete_packets(
-         <<"RTSP", _rest::binary>> = rtsp_message_start,
-         rtsp_session,
-         complete_packets_binaries
-       ) do
+  defp get_complete_packets(data, rtsp_session, complete_packets) do
+    cond do
+      String.starts_with?(data, ["RTSP" | @rtsp_request_starts]) ->
+        handle_rtsp_message(data, rtsp_session, complete_packets)
+
+      # the data ends inside the method name of a request, the rest has not arrived yet
+      Enum.any?(@rtsp_request_starts, fn start -> String.starts_with?(start, data) end) ->
+        {data, Enum.reverse(complete_packets)}
+
+      true ->
+        skip_unknown_data(data, rtsp_session, complete_packets)
+    end
+  end
+
+  @spec handle_rtsp_message(binary(), RTSP.t() | nil, [binary()]) ::
+          {unprocessed_data :: binary(), complete_packets :: [binary()]}
+  defp handle_rtsp_message(rtsp_message_start, rtsp_session, complete_packets_binaries) do
     case RTSP.Response.verify_content_length(rtsp_message_start) do
       {:ok, _expected_length, _actual_length} ->
         RTSP.handle_response(rtsp_session, rtsp_message_start)
 
-        {<<>>, complete_packets_binaries}
+        {<<>>, Enum.reverse(complete_packets_binaries)}
 
       {:error, expected_length, actual_length} when actual_length > expected_length ->
         rest_length = actual_length - expected_length
         rtsp_message_length = byte_size(rtsp_message_start) - rest_length
 
-        <<rtsp_message::binary-size(rtsp_message_length)-unit(8), rest::binary>> =
-          rtsp_message_start
+        {rtsp_message, rest} = :erlang.split_binary(rtsp_message_start, rtsp_message_length)
 
         RTSP.handle_response(rtsp_session, rtsp_message)
 
@@ -110,5 +135,22 @@ defmodule Membrane.RTSP.TCP.Decapsulator do
       {:error, expected_length, actual_length} when actual_length <= expected_length ->
         {rtsp_message_start, Enum.reverse(complete_packets_binaries)}
     end
+  end
+
+  @spec skip_unknown_data(binary(), RTSP.t() | nil, [binary()]) ::
+          {unprocessed_data :: binary(), complete_packets :: [binary()]}
+  defp skip_unknown_data(data, rtsp_session, complete_packets) do
+    {unknown_data, rest} =
+      case :binary.match(data, "$") do
+        {position, _length} -> :erlang.split_binary(data, position)
+        :nomatch -> {data, <<>>}
+      end
+
+    Membrane.Logger.warning(
+      "Skipping #{byte_size(unknown_data)} bytes that are neither an interleaved RTP packet " <>
+        "nor an RTSP message: #{inspect(unknown_data, limit: 32, printable_limit: 32)}"
+    )
+
+    get_complete_packets(rest, rtsp_session, complete_packets)
   end
 end
